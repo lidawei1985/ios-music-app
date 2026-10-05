@@ -520,8 +520,9 @@ body{
 .sp-sub{font-size:12.5px;font-weight:700;letter-spacing:6px;color:rgba(255,255,255,.42);margin-top:-10px}
 .sp-plat{font-size:10.5px;font-weight:700;letter-spacing:2.5px;color:rgba(255,255,255,.6);
   border:1px solid rgba(255,255,255,.22);border-radius:20px;padding:3px 13px;margin-top:6px}
-/* 首页新版式：LOGO → 搜索栏 → 主视觉海报 → 热搜榜 | 热门单曲 并排（两卡同高） */
-.home-search{margin-top:110px;padding:0 14px}
+/* 首页新版式：LOGO（背景层随页滚动，不悬停）→ 搜索栏 → 主视觉海报 → 热搜榜|热门单曲 小双列（静止） */
+.home-logo{display:flex;align-items:center;gap:12px;padding:calc(max(var(--safe-t,0px),60px) + 4px) 18px 0}
+.home-search{margin-top:4px;padding:0 14px}
 .home-search .searchbar{margin:0}   /* 铺满：去掉 searchbar 自身边距（sec 已有内边距） */
 .home-duo{display:flex;gap:8px;align-items:stretch;margin-top:24px;padding:0 10px}
 .home-duo>.duo-col{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -562,6 +563,7 @@ body{
 .az-index i{font-style:normal;font-size:9.5px;font-weight:700;color:var(--txt2);
   text-align:center;width:14px;line-height:13px;cursor:pointer}
 .az-index i:active{color:#fff;transform:scale(1.25)}
+/* 滚动条全程隐藏（滑动照常，永不出现滚动条） */
 .home-duo .row{gap:8px;padding:0 4px;height:44px}
 .home-duo .row .rank{display:none}
 .home-duo .row .art-wrap,.home-duo .row .art-wrap .art{width:34px;height:34px;border-radius:8px}
@@ -569,7 +571,6 @@ body{
 .home-duo .row .meta .s{font-size:10.5px;margin-top:1px}
 .home-duo .row .tag-sq,.home-duo .row .badge{display:none}
 .home-duo .row .act{display:none}   /* 不要「···」：点整行就是进播放详情页，名字占满整行 */
-/* 滚动条全程隐藏（滑动照常，永不出现滚动条） */
 ::-webkit-scrollbar{width:0;height:0;display:none}
 *{scrollbar-width:none}
 
@@ -1753,22 +1754,32 @@ function moodColor(k,alpha){
   const hue={ "助眠电台":258, "通勤路上":200, "运动能量":12, "午后咖啡":30, "DJ 舞曲":318 }[k];
   return "hsl("+(hue==null?(hashHue(k)*7)%360:hue)+" 66% 50% / "+(alpha==null?1:alpha)+")";
 }
+/* 场景电台背景图：用该场景匹配到的第一首歌的真实封面照片（不用矢量图） */
+function MOOD_IMG(k){
+  const m=MOODS.find(v=>v.k===k);
+  if(!m) return "";
+  const s=moodList(m)[0];
+  return (s&&s.cov)||"";
+}
 function buildHome(){
-  const hot=(DB.charts.lists.find(l=>l.name==="热歌榜")||DB.charts.lists[0]||{songs:[]}).songs
-    .filter(x=>!isCv(x.title,x.singer,x.album))            // 首页热歌只放原唱
-    .slice(0,12)
+  const hotAll=(DB.charts.lists.find(l=>l.name==="热歌榜")||DB.charts.lists[0]||{songs:[]}).songs
+    .filter(x=>!isCv(x.title,x.singer,x.album));            // 首页热歌只放原唱
+  const hot=hotAll.slice(0,100)
     .map(x=>({t:x.title,s:x.singer,a:x.album,cov:x.cover,dur:durs(x.duration)}));
   const picks=(DB.songs||[]).slice(0,10);
-  const hk=(DB.charts.hotkeys||[]).slice(0,12);
+  /* 热搜词 100 条：真热词(20) + 热歌榜歌名/歌手去重补足 */
+  const hk0=(DB.charts.hotkeys||[]).slice(0,20);
+  const seen=new Set(hk0.map(h=>h.k)); const hkw=hk0.map(h=>h.k);
+  for(const x of hotAll){ for(const w of [x.title,x.singer]){
+    if(hkw.length>=100) break;
+    if(w&&!seen.has(w)){ seen.add(w); hkw.push(w); }
+  } if(hkw.length>=100) break; }
+  const hk=hkw;
   const grid=DB.charts.lists.map(l=>({name:l.name,count:l.count,top:l.songs[0]})).slice(0,6);
   return {
     html:`
-    <div class="nav" style="border:0;background:linear-gradient(180deg,rgba(11,11,17,.95),rgba(11,11,17,.82) 72%,rgba(11,11,17,0));position:absolute;left:0;right:0;top:var(--safe-t,0px);z-index:8">
-      <div style="width:10px"></div>
-      <div style="flex:1;display:flex;align-items:center;min-width:0">${MARK("mark nav-mark")}${LOGO}</div>
-      <div style="width:16px"></div>
-    </div>
     <div class="scroll tabbed">
+      <div class="home-logo">${MARK("mark nav-mark")}${LOGO}</div>
       <div class="sec home-search">
         <div class="searchbar" data-go="search" style="cursor:pointer">
           ${ICONS.search}<span style="flex:1;font-size:15px">搜索歌曲、歌手、MV…</span>
@@ -1782,14 +1793,13 @@ function buildHome(){
         <div class="duo-col">
           <div class="sec-hd"><h2>热搜榜</h2><div class="more" data-go="charts">更多 ${ICONS.chev}</div></div>
           <div class="hotlist">${(()=>{
-            const HV=[486,431,388,341,297,252,217,188,166,150,139,128];
-            const list=hk.slice(0,12);
+            const list=hk.slice(0,100);
             return list.map((h,i)=>`
-              <div class="hrow" data-kw="${esc(h.k)}">
+              <div class="hrow" data-kw="${esc(h)}">
                 <span class="hrank r${i+1}">${i+1}</span>
-                <span class="hkw">${esc(h.k)}</span>
-                <span class="hbar"><i style="width:${Math.max(18,100-i*9)}%"></i></span>
-                <span class="hval">${HV[i]||"—"}万</span>
+                <span class="hkw">${esc(h)}</span>
+                <span class="hbar"><i style="width:${Math.max(8,100-i)}%"></i></span>
+                <span class="hval">${Math.max(32,486-i*4.4).toFixed(0)}万</span>
               </div>`).join("")||'<div class="hrow" style="color:var(--txt3);font-size:13px">暂无热搜数据</div>';
           })()}</div>
         </div>
@@ -1803,7 +1813,9 @@ function buildHome(){
         <div class="sec-hd"><h2>场景电台</h2><div class="more" id="moodMore">换一批 ${ICONS.chev}</div></div>
       </div>
       <div class="rail" id="moodRail">${MOODS.map(m=>`
-        <div class="moodcard" data-mood="${esc(m.k)}" style="background:linear-gradient(150deg,${moodColor(m.k,.9)},${moodColor(m.k,.45)})">
+        <div class="moodcard" data-mood="${esc(m.k)}" style="${(()=>{const img=MOOD_IMG(m.k);
+          return img?`background:linear-gradient(160deg,${moodColor(m.k,.55)},${moodColor(m.k,.25)} 45%,rgba(8,8,14,.78)),url('${esc(img)}') center/cover`
+                    :`background:linear-gradient(150deg,${moodColor(m.k,.9)},${moodColor(m.k,.45)})`})()}">
           <div class="mt">${esc(m.k)}</div><div class="ms">${esc(m.sub)}</div>
           <div class="mp">${ICONS.play.replace('width="20" height="20"','width="30" height="30"')}</div>
         </div>`).join("")}</div>
@@ -1879,7 +1891,9 @@ function buildCharts(){
         <div class="sec-hd"><h2>场景电台</h2></div>
       </div>
       <div class="rail">${MOODS.map(m=>`
-        <div class="moodcard" data-mood="${esc(m.k)}" style="background:linear-gradient(150deg,${moodColor(m.k,.9)},${moodColor(m.k,.45)})">
+        <div class="moodcard" data-mood="${esc(m.k)}" style="${(()=>{const img=MOOD_IMG(m.k);
+          return img?`background:linear-gradient(160deg,${moodColor(m.k,.55)},${moodColor(m.k,.25)} 45%,rgba(8,8,14,.78)),url('${esc(img)}') center/cover`
+                    :`background:linear-gradient(150deg,${moodColor(m.k,.9)},${moodColor(m.k,.45)})`})()}">
           <div class="mt">${esc(m.k)}</div><div class="ms">${esc(m.sub)}</div>
           <div class="mp">${ICONS.play.replace('width="20" height="20"','width="30" height="30"')}</div>
         </div>`).join("")}</div>
