@@ -712,6 +712,118 @@ async function fetchLive(timeoutMs){
   }catch(e){ return null; }
 }
 
+/* =====================================================================
+   全量曲库目录（10 万级 → 无上限）：manifest + 分片 + 分块搜索索引
+   —— 内置快照只保证「首屏秒开 + 断网可用」，真正的海量曲库按需拉取
+
+   为什么索引是「纯文本分块」而不是 JSON：
+   30 万条 [[名,歌手,id,片],…] 解析出来的对象图约是文本体积的 10 倍，
+   WebView 会被拖垮。改成「一行一条、\u0001 分隔」的字符串块后：
+     · 内存 ≈ 文本体积（就是几个大字符串，没有几百万个小对象）；
+     · 检索用 indexOf 在字符串上滑，命中才切那一行 —— 零额外分配。
+   每块约 4 万行，后台并发 3 路渐进拉，边拉边可搜（搜到多少算多少）。
+   ===================================================================== */
+const CDNCAT = CDN + "catalog/";
+const CSEP = "\u0001";
+const CATALOG = {
+  man:null, ready:false, loading:null, idxLoading:null, err:"",
+  idxTxt:[], idxDone:0, idxTotal:0,
+  shards:new Map(), busy:new Map(),
+  count(){ return this.man ? (this.man.count||0) : 0; },
+  fmt(){ const c=this.count(); return c? (c>=10000? (c/10000).toFixed(1)+" 万" : String(c)) : "—"; },
+  idxPct(){ return this.idxTotal ? Math.round(this.idxDone*100/this.idxTotal) : 0; },
+  searchReady(){ return this.idxTxt.length>0; },
+  async load(){
+    if(this.ready) return true;
+    if(this.loading) return this.loading;
+    this.loading=(async()=>{
+      try{
+        const ac=new AbortController(); const t=setTimeout(()=>ac.abort(),25000);
+        let m=null;
+        try{ m=await fetch(CDNCAT+"manifest.json",{signal:ac.signal}).then(r=>r.ok?r.json():null); }
+        finally{ clearTimeout(t); }
+        if(!m || !m.count) throw new Error("目录缺失或为空");
+        this.man=m;
+        const ch=(m.idx&&m.idx.chunks)||[];
+        this.idxTotal=ch.length; this.idxDone=0;
+        this.ready=true; this.err="";
+        document.dispatchEvent(new CustomEvent("dwg:catalog"));
+        this.loadIdx();                                   // 索引不阻塞目录就绪
+        return true;
+      }catch(e){ this.err=String((e&&e.message)||e); this.loading=null; return false; }
+    })();
+    return this.loading;
+  },
+  /* 索引分块渐进载入：3 路并发，每块到位就发事件让页面增量刷新结果 */
+  loadIdx(){
+    if(this.idxLoading) return this.idxLoading;
+    const ch=(this.man&&this.man.idx&&this.man.idx.chunks)||[];
+    if(!ch.length) return Promise.resolve(false);
+    this.idxTxt=new Array(ch.length);
+    this.idxLoading=(async()=>{
+      let next=0;
+      const worker=async()=>{
+        while(next<ch.length){
+          const i=next++;
+          try{
+            const r=await fetch(CDNCAT+ch[i]);
+            this.idxTxt[i]= r.ok ? await r.text() : "";
+          }catch(e){ this.idxTxt[i]=""; }
+          this.idxDone++;
+          document.dispatchEvent(new CustomEvent("dwg:catidx"));
+        }
+      };
+      await Promise.all([worker(),worker(),worker()]);
+      document.dispatchEvent(new CustomEvent("dwg:catidx"));
+      return true;
+    })();
+    return this.idxLoading;
+  },
+  async shard(i){
+    if(this.shards.has(i)) return this.shards.get(i);
+    if(this.busy.has(i)) return this.busy.get(i);
+    const f=((this.man&&this.man.shards)||[])[i]; if(!f) return null;
+    const p=fetch(CDNCAT+f.file).then(r=>r.ok?r.json():null)
+      .then(a=>{ if(a) this.shards.set(i,a); this.busy.delete(i); return a; })
+      .catch(()=>{ this.busy.delete(i); return null; });
+    this.busy.set(i,p); return p;
+  },
+  /* 目录记录 → 内核统一的歌曲结构（带 .id 即可直接出流） */
+  map(rec){ return {t:rec.n, s:rec.a, a:rec.b||"", cov:rec.p||"", dur:Math.round((rec.d||0)/1000), id:rec.i, cat:true}; },
+  /* 索引块里扫关键词：命中落在「歌名/歌手」两段内才算，避免撞上 id/片号造成假命中 */
+  search(q, cap){
+    const nq=norm(q); if(!nq || !this.idxTxt.length) return [];
+    const out=[], seen=new Set(), lim=cap||100;
+    for(let c=0;c<this.idxTxt.length && out.length<lim;c++){
+      const txt=this.idxTxt[c]; if(!txt) continue;
+      let from=0;
+      while(out.length<lim){
+        const p=txt.indexOf(nq, from);
+        if(p<0) break;
+        let ls=txt.lastIndexOf("\n", p); ls = ls<0 ? 0 : ls+1;
+        let le=txt.indexOf("\n", p);     le = le<0 ? txt.length : le;
+        from = le+1;
+        let cut=0, k=0;                                   // cut = 第 3 个分隔符之后的位置
+        while(k<3){ const s2=txt.indexOf(CSEP, cut); if(s2<0){ cut=txt.length; break; } cut=s2+1; k++; }
+        if(p-ls>=cut) continue;                           // 命中在 id/片号/原名段 → 不是歌名/歌手命中
+        const f=txt.slice(ls,le).split(CSEP);
+        const id=+f[2]; if(!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push({i:id, sh:+f[3], t:f[4]||f[0], s:f[5]||f[1]});
+      }
+    }
+    return out;
+  },
+  /* 搜索索引不含封面：按需把命中的分片拉回来，补封面/时长（最多 12 片） */
+  async decorate(hits, refs){
+    const need=[...new Set(hits.map(h=>h.sh))].slice(0,12);
+    const blobs=await Promise.all(need.map(i=>this.shard(i)));
+    blobs.forEach(b=>{ if(!b) return; b.forEach(rec=>{ const r=refs.get(rec.i); if(!r) return;
+      if(rec.p && r.img && !r.img.dataset.done){ r.img.src=rec.p; r.img.dataset.done="1"; }
+      if(rec.d && r.dur) r.dur.textContent=fmt(Math.round(rec.d/1000)); }); });
+  }
+};
+
 /* 当前只有根页时才原地重建（避免打断二级页/播放器） */
 function rebuildCurrentRoot(){
   if(Nav.stack.length!==1) return;
@@ -759,7 +871,8 @@ const esc = s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt
 const norm = s=>String(s||"").toLowerCase().replace(/[\s\-_（）()\[\]【】·,.，。'"!！?？~～&]/g,"");
 /* 真播放索引：与云端 build._skey() 逐字符对齐（归一化后 40 / 30 截断） */
 function skey(t,s){ return norm(t).slice(0,40)+"|"+norm(s).slice(0,30); }
-function streamOf(s){ const e=s&&DB.st[skey(s.t,s.s)]; return e?e.wy:null; }
+/* 全量曲库的歌自带网易云 id → 直出流；内置快照的歌走预解析映射 */
+function streamOf(s){ if(s&&s.id) return s.id; const e=s&&DB.st[skey(s.t,s.s)]; return e?e.wy:null; }
 function stInfo(s){ return (s&&DB.st[skey(s.t,s.s)])||null; }
 function lyricOf(s){ return (s&&DB.lyr[skey(s.t,s.s)])||null; }
 function cmtOf(s){ return (s&&DB.cmt[skey(s.t,s.s)])||null; }
@@ -1452,11 +1565,11 @@ function buildLibrary(){
     html:`${navBar("自有歌库",`<button class="ibtn" data-sort aria-label="排序">${ICONS.list}</button>`)}
     <div class="scroll">
       <div class="sec"><div class="searchbar"><span>${ICONS.search}</span>
-        <input id="libq" placeholder="在 ${(DB.songs||[]).length} 首自有歌库里搜索" autocomplete="off"></div></div>
+        <input id="libq" placeholder="在 ${CATALOG.ready?CATALOG.fmt()+"首":"自有"}曲库里搜索" autocomplete="off"></div></div>
       <div class="sec" style="display:flex;gap:10px">
         <div class="glassbox" style="flex:1;padding:13px">
-          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px">${(DB.songs||[]).length}</div>
-          <div style="font-size:12px;color:var(--txt2);margin-top:3px">自有歌库曲目</div></div>
+          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px" id="libTot">${CATALOG.ready?CATALOG.count().toLocaleString():(DB.songs||[]).length}</div>
+          <div style="font-size:12px;color:var(--txt2);margin-top:3px">曲库曲目（全量）</div></div>
         <div class="glassbox" style="flex:1;padding:13px">
           <div style="font-size:24px;font-weight:800;letter-spacing:-.8px">${DB.artistList.length}</div>
           <div style="font-size:12px;color:var(--txt2);margin-top:3px">歌手</div></div>
@@ -1472,7 +1585,8 @@ function buildLibrary(){
               <div class="kwg" data-cat="${esc(g.name)}|${esc(c.name)}">${esc(c.name)}</div>`).join("")||'<span style="color:var(--txt3);font-size:13px">暂无</span>'}</div>
           </div>`).join("")||`<div class="sec"><div class="empty"><p>分类数据未加载</p></div></div>`}
       </div>
-      <div class="sec" style="padding-left:16px"><div class="sec-hd" style="margin-bottom:2px"><h2>全部歌曲</h2></div></div>
+      <div class="sec" style="padding-left:16px"><div class="sec-hd" style="margin-bottom:2px"><h2>全部歌曲</h2>
+        <button class="more" id="libAll">全量曲库 ›</button></div></div>
       <div id="libWrap"><div class="group" id="libList"></div></div>
       <div class="foot">分类照大牌体系：语种 / 流派 / 主题（DJ·古风·ACG）/ 心情 / 场景，点标签直达。</div>
     </div>`,
@@ -1480,6 +1594,16 @@ function buildLibrary(){
       renderLib(node);
       const q=node.querySelector("#libq");
       q.oninput=()=>renderLib(node, q.value);
+      const all=node.querySelector("#libAll");
+      if(all) all.onclick=()=>pushPage("catalog", buildCatalog());
+      const upd=()=>{ const t=node.querySelector("#libTot");
+        if(t&&CATALOG.ready){ t.textContent=CATALOG.count().toLocaleString(); q.placeholder="在 "+CATALOG.fmt()+"首曲库里搜索"; } };
+      document.addEventListener("dwg:catalog", upd, {once:true});
+      // 索引是分块渐进载入的：每块到位就重跑一次结果，用户能看到命中数一路上涨
+      const redo=()=>{ if(!node.isConnected){ document.removeEventListener("dwg:catidx",redo); return; }
+        if(node.querySelector("#libq")) renderLib(node,q.value); };
+      document.addEventListener("dwg:catidx", redo);
+      if(!CATALOG.ready) CATALOG.load().then(ok=>{ if(ok&&node.isConnected) renderLib(node,q.value); });
       node.querySelector("[data-sort]").onclick=()=>{
         openSheet("排序方式","歌库共 "+(DB.songs||[]).length+" 首",[
           {i:ICONS.hifi,l:"默认（沉淀顺序）",on:libSort==="default",fn:()=>{libSort="default";renderLib(node,q.value);}},
@@ -1494,9 +1618,16 @@ function buildLibrary(){
 }
 function renderLib(node,q){
   const box=node.querySelector("#libList"); if(!box) return;
-  let list=(DB.songs||[]).slice();
   const nq=norm(q);
+  let list=(DB.songs||[]).slice();
   if(nq) list=list.filter(s=>norm(s.t).includes(nq)||norm(s.s).includes(nq)||norm(s.a).includes(nq));
+  let hits=null, refs=new Map();
+  if(nq && !CATALOG.ready) CATALOG.load().then(ok=>{ if(ok&&node.isConnected) renderLib(node,q); });
+  if(nq && CATALOG.searchReady()){             // 有关键词就把全量曲库并进来一起搜
+    const seen=new Set(list.map(s=>skey(s.t,s.s)));
+    hits=CATALOG.search(q,140).filter(h=>!seen.has(skey(h.t,h.s))).slice(0,80);
+    list=list.concat(hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0})));
+  }
   if(libSort==="t") list.sort((a,b)=>a.t.localeCompare(b.t,"zh"));
   if(libSort==="s") list.sort((a,b)=>a.s.localeCompare(b.s,"zh"));
   if(libSort==="cov") list=list.filter(s=>s.cov);
@@ -1504,14 +1635,82 @@ function renderLib(node,q){
   box.innerHTML="";
   if(!cap.length){
     box.innerHTML=`<div class="empty"><div class="em">🔍</div><p>没有找到「${esc(q)}」</p>
-      <div class="hint">试试其它关键词，或去搜索页联网找歌</div></div>`;
+      <div class="hint">${CATALOG.ready?"全量曲库 "+CATALOG.count().toLocaleString()+" 首里都没有，换个关键词试试":"正在载入全量曲库，稍后再试"}</div></div>`;
   }else{
     cap.forEach((s,i)=>box.appendChild(songRow(s,i,cap,"我的歌库",{sq:false})));
+    cap.forEach((s,i)=>{ if(s.cat) box.children[i] && refs.set(s.id,{img:box.children[i].querySelector(".art"),dur:box.children[i].querySelector(".dur")}); });
+    if(hits&&hits.length) CATALOG.decorate(hits,refs);
     if(list.length>cap.length){
       const m=el("div","gi",`<span class="lab" style="color:var(--txt2);font-size:14px">还有 ${list.length-cap.length} 首，输入关键词继续缩小范围</span>`);
       box.appendChild(m);
     }
   }
+}
+
+/* ---- 全部歌曲：全量曲库（10 万级）分片流式滚动 ---- */
+function buildCatalog(){
+  const st={n:0, list:[], busy:false, done:false};
+  return {
+    html:`${navBar("全部歌曲","")}
+    <div class="scroll" id="cw">
+      <div class="sec" style="display:flex;gap:10px">
+        <div class="glassbox" style="flex:1;padding:13px">
+          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px" id="cTot">—</div>
+          <div style="font-size:12px;color:var(--txt2);margin-top:3px">曲库曲目（热度优先）</div></div>
+        <div class="glassbox" style="flex:1;padding:13px">
+          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px" id="cPag">0</div>
+          <div style="font-size:12px;color:var(--txt2);margin-top:3px">已载入页</div></div>
+      </div>
+      <div class="sec"><div class="searchbar"><span>${ICONS.search}</span>
+        <input id="catq" placeholder="在全量曲库里搜索" autocomplete="off"></div></div>
+      <div class="group" id="cList"></div>
+      <div class="foot" id="cFoot">正在准备曲库目录…</div>
+    </div>`,
+    onMount(node){
+      const box=node.querySelector("#cList"), foot=node.querySelector("#cFoot"), sc=node.querySelector("#cw");
+      const q=node.querySelector("#catq");
+      let qv="";
+      const paint=()=>{ node.querySelector("#cTot").textContent=CATALOG.ready?CATALOG.count().toLocaleString():"—"; };
+      async function fill(){
+        if(st.busy||st.done) return; st.busy=true;
+        if(!CATALOG.ready){
+          foot.textContent="正在载入曲库目录…";
+          const ok=await CATALOG.load();
+          paint();
+          if(!ok){ foot.textContent="曲库目录取不到："+(CATALOG.err||"网络异常"); st.busy=false; return; }
+        }
+        const total=(CATALOG.man.shards||[]).length;
+        if(st.n>=total){ st.done=true; foot.textContent="已到底部 · 全量 "+CATALOG.count().toLocaleString()+" 首"; st.busy=false; return; }
+        const arr=await CATALOG.shard(st.n);
+        st.n++;
+        node.querySelector("#cPag").textContent=st.n;
+        if(arr) arr.forEach(rec=>{ st.list.push(CATALOG.map(rec)); box.appendChild(songRow(st.list[st.list.length-1], st.list.length-1, st.list, "全量曲库", {sq:false})); });
+        foot.textContent="已载入 "+st.n+" / "+total+" 页 · 共 "+CATALOG.count().toLocaleString()+" 首（按热度+新鲜度排序），继续下滑加载";
+        st.busy=false;
+        if(sc.scrollTop+sc.clientHeight>sc.scrollHeight-500) fill();
+      }
+      sc.addEventListener("scroll",()=>{ if(sc.scrollTop+sc.clientHeight>sc.scrollHeight-600) fill(); });
+      if(q) q.oninput=()=>{
+        qv=q.value.trim();
+        if(!qv){ box.innerHTML=""; st.list.forEach((s,i)=>box.appendChild(songRow(s,i,st.list,"全量曲库",{sq:false})));
+          foot.textContent="已载入 "+st.n+" 页 · 共 "+(CATALOG.count()||0)+" 首"; return; }
+        if(!CATALOG.searchReady()){ foot.textContent="搜索索引载入中 "+CATALOG.idxPct()+"%…"; CATALOG.load().then(paint); return; }
+        const hits=CATALOG.search(qv,120);
+        const songs=hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0}));
+        box.innerHTML=""; const refs=new Map();
+        songs.forEach((s,i)=>{ const row=songRow(s,i,songs,"搜索:"+qv,{sq:false,badge:"全库",badgeCls:"b-free"});
+          box.appendChild(row); refs.set(s.id,{img:row.querySelector(".art"),dur:row.querySelector(".dur")}); });
+        foot.textContent="命中 "+hits.length+" 首（曲库 "+CATALOG.count().toLocaleString()+" 首"
+          +(CATALOG.idxDone<CATALOG.idxTotal?" · 索引 "+CATALOG.idxPct()+"%":"")+"）";
+        CATALOG.decorate(hits,refs);
+      };
+      // 索引分块到位 → 若用户正搜着，自动补上新命中
+      const reidx=()=>{ if(!node.isConnected){ document.removeEventListener("dwg:catidx",reidx); return; } if(qv) q.oninput(); };
+      document.addEventListener("dwg:catidx", reidx);
+      fill(); paint();
+      bindCommon(node);
+    }
+  };
 }
 
 /* ---- 搜索（真联想 + 真历史 + 全库深度检索）---- */
@@ -1622,6 +1821,12 @@ function doSearch(q, res){
       || (q2 && (norm(s.t).includes(q2)||norm(s.s).includes(q2)))).slice(0,60);
   const mvs=((DB.mv?.collections||[]).flatMap(c=>c.items)).filter(m=>norm(m.t).includes(nq)||norm(m.a).includes(nq)).slice(0,8);
   const arts=DB.artistList.filter(a=>norm(a.n).includes(nq)).slice(0,8);
+
+  /* 全量曲库命中：与内置快照去重后追加（索引分块载入，能搜多少算多少） */
+  const seen=new Set(lib.map(s=>skey(s.t,s.s)));
+  const cHits=CATALOG.searchReady()? CATALOG.search(q,220).filter(h=>!seen.has(skey(h.t,h.s))).slice(0,80) : [];
+  const cSongs=cHits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0}));
+  const idxFull=CATALOG.idxTotal>0 && CATALOG.idxDone>=CATALOG.idxTotal;
   let html="";
   if(arts.length){
     html+=`<div class="sec"><div class="sec-hd"><h2 style="font-size:17px">歌手</h2></div>
@@ -1629,8 +1834,9 @@ function doSearch(q, res){
         <img class="cov" style="width:92px;height:92px" src="${esc(a.av||ph(a.n))}" alt="">
         <div class="t" style="font-size:12.5px">${esc(a.n)}</div></div>`).join("")}</div></div>`;
   }
-  if(lib.length){
-    html+=`<div class="sec"><div class="sec-hd"><h2 style="font-size:17px">歌曲 <span style="font-size:12.5px;color:var(--txt3);font-weight:500">${lib.length} 首</span></h2></div></div>
+  const allN=lib.length+cSongs.length;
+  if(allN){
+    html+=`<div class="sec"><div class="sec-hd"><h2 style="font-size:17px">歌曲 <span style="font-size:12.5px;color:var(--txt3);font-weight:500">命中 ${allN} 首${cSongs.length?` · 全库检索`:` · 本地缓存`}</span></h2>${cSongs.length?`<span style="font-size:12px;color:var(--txt3)">曲库 ${CATALOG.fmt()} 首</span>`:""}</div></div>
       <div class="group" id="srl"></div>`;
   }
   if(mvs.length){
@@ -1641,14 +1847,36 @@ function doSearch(q, res){
         <div class="t" style="font-size:12.5px">${esc(m.t)}</div></div>`).join("")}</div>`;
   }
   if(!lib.length && !mvs.length && !arts.length){
-    html=`<div class="empty"><div class="em">🎵</div><p>我们自己的曲库里暂时没有「${esc(q)}」</p>
-      <div class="hint">换个关键词试试；新歌随云端流水线每 2 小时不断补进曲库</div>
+    html=`<div class="empty"><div class="em">🎵</div><p>${idxFull?"我们自己的曲库里暂时没有「"+esc(q)+"」":"正在检索全量曲库…"}</p>
+      <div class="hint">${idxFull?"换个关键词试试；曲库随云端流水线每 2 小时更新":"搜索索引载入中 "+CATALOG.idxPct()+"%，命中会实时冒出来"}</div>
       <button class="btn btn-line" data-tolist style="margin-top:18px">${ICONS.list}<span class="btxt">去看看全部榜单</span></button>
       <button class="btn btn-line" data-tocat style="margin-top:10px">${ICONS.disc}<span class="btxt">按分类找歌</span></button></div>`;
   }
+  if(!CATALOG.ready){
+    html+=`<div class="sec" id="catLoad"><div class="gi"><span class="lab" style="color:var(--txt2)">
+      ${CATALOG.err?("全量曲库暂时取不到（"+esc(CATALOG.err)+"），先看本地缓存结果"):"正在载入全量曲库目录…"}</span></div></div>`;
+  }
   res.innerHTML=html;
   const sl=res.querySelector("#srl");
-  if(sl) lib.forEach((s,i)=>sl.appendChild(songRow(s,i,lib,"搜索:"+q,{sq:false})));
+  if(sl){
+    const all=lib.concat(cSongs);
+    lib.forEach((s,i)=>sl.appendChild(songRow(s,i,all,"搜索:"+q,{sq:false})));
+    const refs=new Map();
+    cSongs.forEach((s,i)=>{
+      const row=songRow(s,lib.length+i,all,"搜索:"+q,{sq:false,badge:"全库",badgeCls:"b-free"});
+      sl.appendChild(row);
+      refs.set(s.id,{img:row.querySelector(".art"),dur:row.querySelector(".dur")});
+    });
+    if(cHits.length) CATALOG.decorate(cHits,refs);   // 补封面/时长（按需拉分片）
+  }
+  if(!CATALOG.ready && !CATALOG.loading){
+    CATALOG.load().then(ok=>{ if(res.isConnected){ if(ok) doSearch(q,res); else { const n=res.querySelector("#catLoad"); if(n) n.innerHTML=`<div class="gi"><span class="lab" style="color:var(--txt2)">全量曲库取不到：${esc(CATALOG.err)}</span></div>`; } } });
+  }
+  // 索引每到位一块就重跑本页 → 命中数实时长出来（页面离开即自动摘掉监听）
+  if(!idxFull){
+    const reidx=()=>{ if(!res.isConnected){ document.removeEventListener("dwg:catidx",reidx); return; } doSearch(q,res); };
+    document.addEventListener("dwg:catidx", reidx);
+  }
   const tl=res.querySelector("[data-tolist]");
   if(tl) tl.onclick=()=>{ while(Nav.stack.length>1) popPage(); gotoTab("charts"); };
   const tc=res.querySelector("[data-tocat]");
@@ -2296,6 +2524,8 @@ function paintFooter(){
   window.__READY__ = true;
   // ② 后台静默拉取公网池，拿到了再刷新（绝不阻塞首屏）
   refreshLive();
+  // ③ 全量曲库目录（10 万级）：首屏稳定后空闲时预取，用户一搜即得
+  setTimeout(()=>{ CATALOG.load().then(ok=>{ if(ok) toast("曲库已扩展到 "+CATALOG.fmt()+" 首"); }); }, 6000);
 })();
 </script>
 </body>

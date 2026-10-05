@@ -27,7 +27,7 @@ final class ShellViewController: UIViewController, WKNavigationDelegate {
 
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
-        cfg.mediaTypesRequiringUserAction = []          // 不要求手势即可播放
+        cfg.mediaTypesRequiringUserActionForPlayback = []   // 不要求手势即可播放
         cfg.websiteDataStore = .default()               // localStorage 落盘
         cfg.allowsPictureInPictureMediaPlayback = false
         // 平台标识：先于页面任何脚本执行（与 Android 的打包期注入对齐）

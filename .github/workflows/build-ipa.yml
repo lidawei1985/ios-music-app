@@ -59,8 +59,10 @@ jobs:
             exit 1
           fi
 
-          app=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name 'DWGMusic.app' | head -1)
-          [ -n "$app" ] || { echo "::error::DWGMusic.app 未产出"; exit 1; }
+          # 产物名跟随 CFBundleDisplayName（中文「大伟歌.app」），因此按 *.app 找，且必须在
+          # Release-iphoneos 根下（maxdepth 1），避免匹配到 .dSYM 或 Frameworks 里的嵌套包。
+          app=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -1)
+          [ -n "$app" ] || { echo "::error::真机 .app 未产出"; ls -la build/DD/Build/Products/Release-iphoneos || true; exit 1; }
           echo "app = $app"
 
           # 硬门禁：内核必须真进 bundle，且必须带 iOS 壳标记（防「编出来是空壳」）
