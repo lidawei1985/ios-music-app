@@ -61,6 +61,11 @@ def main():
 
     # 曲库分块：本机工程里有最新产物就同步过去；CI（没有 cloud/）沿用仓库里已提交的
     if os.path.isdir(CAT_SRC):
+        os.makedirs(CAT_DST, exist_ok=True)
+        # 先清掉上一版残留分块（旧版 18 块 → 新版 5 块），否则旧分块会被一起打进包
+        for old in os.listdir(CAT_DST):
+            if old.startswith("cat-") and old.endswith(".js"):
+                os.remove(os.path.join(CAT_DST, old))
         n = 0
         for fn in os.listdir(CAT_SRC):
             if fn.startswith("cat-") and fn.endswith(".js"):

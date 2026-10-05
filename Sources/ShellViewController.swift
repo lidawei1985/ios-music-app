@@ -13,7 +13,7 @@ import UIKit
 import WebKit
 import AVFoundation
 
-final class ShellViewController: UIViewController, WKNavigationDelegate {
+final class ShellViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
 
     private var web: WKWebView!
 
@@ -35,6 +35,8 @@ final class ShellViewController: UIViewController, WKNavigationDelegate {
             WKUserScript(source: "window.__PLATFORM__='ios';",
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: true))
+        // 原生代发通道：页面用 window.webkit.messageHandlers.dwg.postMessage({id,method,params})
+        cfg.userContentController.add(self, name: "dwg")
 
         web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = self
@@ -63,4 +65,31 @@ final class ShellViewController: UIViewController, WKNavigationDelegate {
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
     override var prefersStatusBarHidden: Bool { false }
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    // MARK: - 原生代发桥（高码率直链 / 歌词）
+    // 页面 → 原生：{id, method, params}
+    // 原生 → 页面：window.__dwgCb(id, base64(JSON))  —— base64 避免任何转义坑
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "dwg", let body = message.body as? [String: Any] else { return }
+        let id = (body["id"] as? NSNumber)?.intValue ?? 0
+        let method = (body["method"] as? String) ?? ""
+        let params = (body["params"] as? [String: Any]) ?? [:]
+        DwgNet.shared.handle(method: method, params: params) { [weak self] obj in
+            self?.reply(id: id, obj: obj)
+        }
+    }
+
+    private func reply(id: Int, obj: [String: Any]?) {
+        var json = "null"
+        if let o = obj,
+           let d = try? JSONSerialization.data(withJSONObject: o),
+           let s = String(data: d, encoding: .utf8) {
+            json = s
+        }
+        let b64 = Data(json.utf8).base64EncodedString()
+        let js = "window.__dwgCb && window.__dwgCb(\(id), \"\(b64)\");"
+        DispatchQueue.main.async { [weak self] in
+            self?.web.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
 }
