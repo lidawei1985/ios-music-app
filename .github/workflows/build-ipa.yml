@@ -74,6 +74,12 @@ jobs:
           grep -q 'data-shell="ios"' "$k" || { echo "::error::内核缺 data-shell=\"ios\" 壳标记"; exit 1; }
           grep -q '__PLATFORM__' "$k" || { echo "::error::内核缺平台标识注入"; exit 1; }
 
+          # 硬门禁：曲库分块必须真进 bundle（离线 13 万首搜索的根基）
+          cn=$(ls "$app" | grep -c '^cat-.*\.js$' || true)
+          echo "catalog chunks in bundle: $cn"
+          [ -f "$app/cat-manifest.js" ] || { echo "::error::cat-manifest.js 未进 bundle（曲库分块缺失）"; exit 1; }
+          [ "$cn" -ge 18 ] || { echo "::error::曲库分块只有 $cn 个（应 ≥18：1 清单 + 4 索引 + 13 分片包）"; exit 1; }
+
           mkdir -p out/Payload
           cp -R "$app" out/Payload/
           (cd out && zip -qry DWGMusic-unsigned.ipa Payload)

@@ -12,6 +12,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../music
 PROJ = os.path.dirname(ROOT)                                          # .../musicdl
 HTML_DST = os.path.join(ROOT, "Resources", "app.html")
 ICON_DST = os.path.join(ROOT, "Assets.xcassets", "AppIcon.appiconset", "icon-1024.png")
+# 曲库脚本分块（cat-manifest.js / cat-idx-NN.js / cat-sh-NN.js）：随包内置，离线可搜 13 万首。
+# 为什么随包：实测中国网络直连 jsDelivr 只有 1~8 KB/s，靠 CDN 拉 14MB 索引＝每次开 App 等几分钟。
+CAT_SRC = os.path.join(PROJ, "cloud", "data", "catalog", "js")
+CAT_DST = os.path.join(ROOT, "Resources")
 
 # 内核来源：本机工程优先用 prototype/（与 Android 端同一份）；CI 克隆出来没有 prototype/
 # 时退回仓库自带的 kernel/ 副本 —— 保证「本机改一处、云端出的包同步」不靠手工拷贝。
@@ -54,6 +58,19 @@ def main():
     else:
         shutil.copyfile(ICON_SRC, ICON_DST)
         print("  AppIcon 已就位 (1024)")
+
+    # 曲库分块：本机工程里有最新产物就同步过去；CI（没有 cloud/）沿用仓库里已提交的
+    if os.path.isdir(CAT_SRC):
+        n = 0
+        for fn in os.listdir(CAT_SRC):
+            if fn.startswith("cat-") and fn.endswith(".js"):
+                shutil.copyfile(os.path.join(CAT_SRC, fn), os.path.join(CAT_DST, fn))
+                n += 1
+        print("  曲库分块 %d 个 → Resources/（随包内置）" % n)
+    else:
+        have = [f for f in os.listdir(CAT_DST) if f.startswith("cat-") and f.endswith(".js")] \
+            if os.path.isdir(CAT_DST) else []
+        print("  [提示] 本机无 %s，沿用仓库内已有曲库分块 %d 个" % (CAT_SRC, len(have)))
 
     print("\n下一步（Mac 上）:")
     print("  1. brew install xcodegen")
