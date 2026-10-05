@@ -1,0 +1,8 @@
+build/
+out/
+Resources/app.html
+*.xcodeproj/
+xcuserdata/
+.DS_Store
+__pycache__/
+probe_dev.py
