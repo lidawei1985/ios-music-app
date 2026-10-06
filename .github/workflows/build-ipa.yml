@@ -102,35 +102,37 @@ jobs:
       # 版本号取内容 sha256 前 12 位：内容一变版本必变，杜绝「改了内容忘了改版本号」。
       - name: 发布内核热更新清单
         if: github.ref == 'refs/heads/main'
+        # 注意：shell 里 $VAR 后面**绝对不要紧跟中文/全角字符**。
+        # bash 解析变量名时会把多字节首字节吞进名字，set -u 下直接
+        # 报 "VER?: unbound variable"（早期版本就踩了这个坑）。
+        # 因此下面一律写成 ${VAR} 显式定界，且用 printf 拼 JSON。
         run: |
           set -euo pipefail
           # 复用上一步「打壳」的产出（已含 data-shell=ios + __PLATFORM__）
           python3 scripts/pack.py
           SRC=Resources/app.html
-          [ -f "$SRC" ] || { echo "::error::$SRC 不存在"; exit 1; }
-          cp "$SRC" kernel/dist.html
+          [ -f "${SRC}" ] || { echo "::error::${SRC} missing"; exit 1; }
+          cp "${SRC}" kernel/dist.html
           BYTES=$(stat -f%z kernel/dist.html)
           SHA=$(shasum -a 256 kernel/dist.html | awk '{print $1}')
           VER=${SHA:0:12}
-          cat > kernel/kernel.json <<EOF
-          {
-            "version": "$VER",
-            "file": "dist.html",
-            "bytes": $BYTES,
-            "sha256": "$SHA",
-            "updated": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          }
-          EOF
-          echo "kernel.json → v$VER ($BYTES bytes, kernel/dist.html)"
+          NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          printf '{\n  "version": "%s",\n  "file": "dist.html",\n  "bytes": %s,\n  "sha256": "%s",\n  "updated": "%s"\n}\n' \
+            "${VER}" "${BYTES}" "${SHA}" "${NOW}" > kernel/kernel.json
+
+          echo "kernel.json -> v${VER} (${BYTES} bytes, kernel/dist.html)"
+          cat kernel/kernel.json
 
           git config user.name "dwg-kernel-bot"
           git config user.email "dwg-kernel-bot@users.noreply.github.com"
           git add kernel/dist.html kernel/kernel.json
           if git diff --cached --quiet; then
-            echo "内核无变化，跳过提交"
+            echo "kernel unchanged, skip commit"
           else
-            git commit -m "内核热更 v$VER（$BYTES 字节）$(date -u '+%Y-%m-%d %H:%M')"
+            git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW}"
             git push
+            echo "pushed kernel v${VER}"
           fi
 
       - name: 刷新 CDN 缓存（让新版立刻可拉）
