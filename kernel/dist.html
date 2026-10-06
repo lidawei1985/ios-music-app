@@ -788,6 +788,38 @@ function songCoverRaw(title, singer, cov, fallback){
   return assetURL("cv", skey(title, singer), cov || fallback || "");
 }
 
+/* ★★ 图片索引加载 —— 必须走 <script> 注入，**不能**走 fetch。
+   事故：采集器把几万张封面下载成我们自己的 WebP 了，但索引只给了 assets/<kind>.json，
+   而端上是 file:// 页面 —— WebView 拦 fetch/XHR（见本文件「曲库目录」一节），
+   fetch 永远拿不到索引 → assetURL 查不到文件名 → 所有封面回落上游 URL。
+   「图下好了、端上认不出」= 沉淀白做。这就是那个根因。
+   做法与曲库分块完全同构（已验证可行）：
+     ① 包内 assets-<kind>.js（随包内置，离线可用）
+     ② CDN 的 assets/<kind>.js（有网时热更新）
+   两条都用 loadScript 注入，file:// 下 <script> 子资源**不被拦**。 */
+let _assetsLoaded = false;
+async function loadAssetsIndex(){
+  if(_assetsLoaded) return;
+  _assetsLoaded = true;
+  for(const k of ASSET_NAMES){
+    if(DB["assets_"+k] && DB["assets_"+k].map) continue;
+    if(typeof loadScript!=="function") break;
+    const g = "__DWG_ASSETS_" + k.toUpperCase();
+    const srcs = [resURL("assets-"+k+".js"), ASSETBASE + k + ".js"];
+    for(const s of srcs){
+      try{ window[g]=null; }catch(e){}
+      let ok=false;
+      try{ ok = await loadScript(s, 12000); }catch(e){ ok=false; }
+      if(!ok) continue;
+      let v=null;
+      try{ v = window[g]; }catch(e){}
+      if(v && v.map){ DB["assets_"+k]=v; console.log("[DWG] 图片索引已加载 "+k+"："+Object.keys(v.map).length+" 条"); break; }
+    }
+  }
+  /* 灌进 DB.as_*（assetURL 查的就是它）。拿不到的类保持 {}，assetURL 自动回落远程。 */
+  ASSET_NAMES.forEach(k=>{ DB["as_"+k] = (DB["assets_"+k] && DB["assets_"+k].map) || DB["as_"+k] || {}; });
+}
+
 /* 把一份数据装载进 DB 并刷新外壳（同步） */
 function applyBundle(out, live){
   Object.assign(DB, out);
@@ -828,13 +860,14 @@ async function fetchLive(timeoutMs){
     const timer = setTimeout(()=>ac.abort(), timeoutMs||9000);
     let rs;
     try{
-      const names = DB_NAMES.concat(ASSET_NAMES.map(k=>"assets/"+k));
+      const names = DB_NAMES.slice();
       rs = await Promise.all(names.map(n=>fetch(CDN+n+".json",{cache:"no-store",signal:ac.signal}).catch(()=>null)));
     } finally { clearTimeout(timer); }
     const js = await Promise.all(rs.map(r=>(r&&r.ok)?r.json().catch(()=>null):Promise.resolve(null)));
     const out={}; DB_NAMES.forEach((n,i)=>{ if(js[i]) out[n]=js[i]; });
-    // 图片索引是可选的：拿不到就静默跳过（不影响主数据）
-    ASSET_NAMES.forEach((k,i)=>{ const v=js[DB_NAMES.length+i]; if(v) out["assets_"+k]=v; });
+    /* ★ 图片索引**不在这里拉**：file:// 下 WebView 拦 fetch，拉也是白拉。
+       统一交给 loadAssetsIndex() 用 <script> 注入（包内 assets-<kind>.js → CDN 同名文件）。
+       这里少三个必失败的请求，主数据也能更快回来。 */
     if(!out.pool||!out.charts) throw new Error("cdn 核心文件缺失");
     return out;
   }catch(e){ return null; }
@@ -1091,8 +1124,16 @@ function srchRank(s, nq){
   if(s.cv===2) return r+6;                               // 云端标的翻唱：重罚
   return r + (CV_RE.test(String(s.t||"")+"\u0001"+String(s.s||"")+"\u0001"+String(s.a||""))?2:0);
 }
-/* 真播放索引：与云端 build._skey() 逐字符对齐（归一化后 40 / 30 截断） */
-function skey(t,s){ return norm(t).slice(0,40)+"|"+norm(s).slice(0,30); }
+/* 真播放索引：与云端 build._skey() 逐字符对齐（归一化后 40 / 30 截断）
+   ★★ 截断必须按**码点**，不能按 UTF-16 码元：
+      JS 的 String.prototype.slice() 数的是 UTF-16 code unit，
+      emoji / 非 BMP 汉字（如 𠮷、🕯）占 2 个 —— 一旦标题里出现，
+      切出来的长度就比 Python 的 s[:40]（按码点）短，键直接对不上，
+      表现为「这首歌的封面/播放映射莫名其妙查不到」。
+      Array.from() 走迭代器 = 按码点拆，与 Python 语义严格一致。
+      实测当前曲库 101256 首里命中 0 首（潜伏 bug），但契约必须严密。 */
+const cpslice=(s,n)=>{ s=String(s==null?"":s); return Array.from(s).slice(0,n).join(""); };
+function skey(t,s){ return cpslice(norm(t),40)+"|"+cpslice(norm(s),30); }
 /* 全量曲库的歌自带网易云 id → 直出流；内置快照的歌走预解析映射 */
 /* =====================================================================
    多源取流（★ 2026-10-06 主人「VIP也想办法能到」的落地）
@@ -3172,6 +3213,11 @@ function paintFooter(){ /* 已下线：源池等内部状态不再外显 */ }
   window.__READY__ = true;
   // ② 后台静默拉取公网池，拿到了再刷新（绝不阻塞首屏）
   refreshLive();
+  // ★★ 图片索引（包内 assets-<kind>.js / CDN assets/<kind>.js）
+  //   单独走 loadScript 而不是并到 fetchLive：file:// 下 WebView 拦 fetch，
+  //   索引若只走 fetch 就永远拿不到 → assetURL 全 miss → 封面全回落上游 URL。
+  //   拿到后重建当前页，把已经渲染在屏上的卡片换成我们自己的图。
+  loadAssetsIndex().then(()=>{ try{ rebuildCurrentRoot(); }catch(e){} });
   // ③ 全量曲库目录（10 万级）：首屏稳定后空闲时预取，用户一搜即得
   setTimeout(()=>{ CATALOG.load().then(ok=>{ if(ok) toast("曲库已扩展到 "+CATALOG.fmt()+" 首"); }); }, 6000);
   // ④ 内核热更新检查（静默、延后、失败不影响任何功能）
