@@ -11,6 +11,8 @@
 //    的媒体层在 WKWebView 被限制 = 真机黑屏；Safari 容器是确定性可播方案），
 //    关闭后回调页面 __dwgMvClosed() 恢复音乐断点续播
 //  - 横竖屏：页面经 dwg 桥发 orient {all:1|0}，MV 页允许旋转，其余锁竖屏
+//  - 内核热更新：优先加载沙盒内核（Documents/kernel/app.html，由页面下载+原生落盘），
+//    没有/坏了就回退包内 —— 于是「改内核」不再需要重新出包推机
 //
 
 import UIKit
@@ -42,6 +44,15 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
             WKUserScript(source: "window.__PLATFORM__='ios';",
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: true))
+        // 包内资源目录（绝对值）：当内核从沙盒加载时，曲库分块 cat-*.js 仍在 App 包内，
+        // 页面相对路径会指向沙盒目录而 404 —— 把包内目录告诉页面，让它优先用这里的资源。
+        if let bundleDir = Bundle.main.resourceURL {
+            let u = bundleDir.absoluteString
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: "window.__DWG_RES__='\(u)';",
+                             injectionTime: .atDocumentStart,
+                             forMainFrameOnly: true))
+        }
         // 原生代发通道：页面用 window.webkit.messageHandlers.dwg.postMessage({id,method,params})
         cfg.userContentController.add(self, name: "dwg")
 
@@ -53,10 +64,9 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
         web.scrollView.bounces = false
         view = web
 
-        if let url = Bundle.main.url(forResource: "app", withExtension: "html", subdirectory: "app") {
-            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-        } else if let url = Bundle.main.url(forResource: "app", withExtension: "html") {
-            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        if let picked = KernelStore.resolveBootKernel() {
+            NSLog("[DWG] 内核来源: \(picked.source) → \(picked.url.lastPathComponent)")
+            web.loadFileURL(picked.url, allowingReadAccessTo: picked.url.deletingLastPathComponent())
         } else {
             let lb = UILabel()
             lb.text = "内核缺失：Resources/app.html 未打包进 App"
@@ -112,6 +122,27 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
                 }
             }
             reply(id: id, obj: ["ok": true])
+
+        // MARK: 内核热更新
+        //
+        //  为什么整个下载都放原生：file:// 页面里 fetch/XHR 跨源会被 WKWebView 拦死
+        //  （与歌词/高码率同一个原因），页面既读不到 CDN 的 kernel.json，也拉不动 app.html。
+        //  所以页面只负责「问一下有没有新版」，真正的取清单 + 下载 + 校验 + 落盘全在原生做。
+        //  这也顺带避免了把 6MB 内核在 JS 与原生之间来回搬的内存峰值。
+        case "kcheck":
+            // params: { base: "<CDN base url>" }，例如 https://gcore.jsdelivr.net/gh/xxx@main/data/kernel/
+            guard let base = params["base"] as? String, !base.isEmpty else {
+                reply(id: id, obj: ["ok": false, "msg": "缺 base"])
+                return
+            }
+            KernelUpdater.checkAndPull(base: base) { [weak self] r in
+                self?.reply(id: id, obj: r)
+            }
+
+        case "kinfo":
+            reply(id: id, obj: ["ok": true, "status": KernelStore.statusText(),
+                                "version": KernelStore.currentVersion()])
+
         default:
             DwgNet.shared.handle(method: method, params: params) { [weak self] obj in
                 self?.reply(id: id, obj: obj)
