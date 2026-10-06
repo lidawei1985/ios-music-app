@@ -42,26 +42,38 @@ body{
 @property --a3{syntax:'<color>';inherits:true;initial-value:#0a84ff}
 @property --a4{syntax:'<color>';inherits:true;initial-value:#32d74b}
 @property --a5{syntax:'<color>';inherits:true;initial-value:#ff9f0a}
-:root{transition:--accent 1s var(--ease),--accent-soft 1s var(--ease),--hi 1s var(--ease),
-  --tint1 1s var(--ease),--tint2 1s var(--ease),
-  --a1 1.1s var(--ease),--a2 1.2s var(--ease),--a3 1.3s var(--ease),--a4 1.4s var(--ease),--a5 1.5s var(--ease)}
+/* ★ 发热治理①：过渡只留真正需要全站平滑的主色。
+   原先 10 个自定义属性（含 5 个只给氛围光用、1 个 --hi 根本没人用）全挂在 :root 上做 1~1.5s 过渡 ——
+   自定义属性 inherits:true，在根上变化会让**整棵文档**的 computed style 逐帧失效重算，
+   同时 5 个 58px 模糊光斑逐帧重新栅格化。换一首歌 = 全页抖 1.5 秒。
+   现在：--a1..--a5 下移到 .aurora、--tint1/--tint2 下移到 .screen（各自唯一的消费者），
+   过渡作用域从「整棵树」缩成「那个元素」；--hi 无声消费者直接停掉。颜色值与时长均未改动。 */
+:root{transition:--accent 1s var(--ease),--accent-soft 1s var(--ease)}
 
 /* ============ 机壳 ============ */
 .phone{position:relative;width:421px;height:880px;border-radius:58px;flex:none;
   background:linear-gradient(160deg,#5d5d67,#1b1b1f 32%,#0d0d0f 70%,#3d3d45);
   padding:14px;box-shadow:0 50px 90px -20px rgba(0,0,0,.92),0 0 0 1px rgba(255,255,255,.07);}
 .screen{position:relative;width:393px;height:852px;border-radius:46px;overflow:hidden;
-  background:radial-gradient(120% 80% at 50% 0%,var(--tint1) 0%,var(--tint2) 46%,#060609 100%);isolation:isolate}
+  background:radial-gradient(120% 80% at 50% 0%,var(--tint1) 0%,var(--tint2) 46%,#060609 100%);isolation:isolate;
+  transition:--tint1 1s var(--ease),--tint2 1s var(--ease)}
 
 /* ============ 氛围光层（玻璃的"背后"内容 · 全局可透视）============ */
-.aurora{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
-.aurora i{position:absolute;display:block;border-radius:50%;filter:blur(58px);will-change:transform}
+.aurora{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;contain:layout paint;
+  transition:--a1 .8s var(--ease),--a2 .85s var(--ease),--a3 .9s var(--ease),--a4 .95s var(--ease),--a5 1s var(--ease)}
+.aurora i{position:absolute;display:block;border-radius:50%;filter:blur(58px)}
+/* ★ 发热治理②：氛围光「常驻漂移」已停（.anim 不再默认挂上，只保留能力备用）。
+   原因是它与全站 26 处 backdrop-filter 互相拖累：光斑每帧在动 → 压在上面的
+   .page 全屏 blur(26px)、.nav/.tabbar 等每帧都得重新采样重算，
+   等于让 GPU 24 小时不间断跑全屏高斯模糊 —— 手机就是这么烫起来的。
+   而 drift 的实际观感：58px 模糊的光斑 22 秒里只挪 26px（≈2.4px/s），肉眼完全看不出。
+   停掉后：模糊层背后变成静态 → 结果可被缓存，不再每帧重算。 */
+.aurora.anim i{will-change:transform;animation:drift 22s ease-in-out infinite alternate}
 .aurora i:nth-child(1){width:330px;height:330px;left:-110px;top:-70px;background:radial-gradient(circle,var(--a1),transparent 68%);opacity:.55}
 .aurora i:nth-child(2){width:320px;height:320px;right:-120px;top:150px;background:radial-gradient(circle,var(--a2),transparent 68%);opacity:.5}
 .aurora i:nth-child(3){width:300px;height:300px;left:-80px;bottom:90px;background:radial-gradient(circle,var(--a3),transparent 70%);opacity:.42}
 .aurora i:nth-child(4){width:260px;height:260px;right:-70px;bottom:-60px;background:radial-gradient(circle,var(--a4),transparent 72%);opacity:.26}
 .aurora i:nth-child(5){width:200px;height:200px;left:120px;top:330px;background:radial-gradient(circle,var(--a5),transparent 72%);opacity:.2}
-.aurora.anim i{animation:drift 22s ease-in-out infinite alternate}
 .aurora.anim i:nth-child(2){animation-duration:28s;animation-delay:-6s}
 .aurora.anim i:nth-child(3){animation-duration:26s;animation-delay:-12s}
 .aurora.anim i:nth-child(4){animation-duration:31s;animation-delay:-3s}
@@ -621,7 +633,7 @@ html[data-shell] .toast{top:calc(var(--safe-t) + 6px)}
 <body data-page-node-id="L89VlaH9avRrjb6Ive7B22">
 <div class="stage" data-page-node-id="64aZ8UT71CkLwmfTl31EEO">
 <div class="phone" data-page-node-id="HUABOhxzSktIqLOLz5UZdT"><div class="screen" id="screen" data-page-node-id="XlpRNPBq0HAj0lq69vdxry">
-  <div class="aurora anim" aria-hidden="true" data-page-node-id="C4jRigRK5o5v1FdLDWq66H"><i data-page-node-id="IWKBYI0gOrx7u5XaSPl3w1"></i><i data-page-node-id="3MK8QZfedRSsKpXbj9JDl0"></i><i data-page-node-id="pCnPoTRUI6oNeivSVreiIA"></i><i data-page-node-id="EeEPqL1zwfCc1bHAy4iF4O"></i><i data-page-node-id="iNLwtWrs0RvPK4F0Ox6ukc"></i></div>
+  <div class="aurora" aria-hidden="true" data-page-node-id="C4jRigRK5o5v1FdLDWq66H"><i data-page-node-id="IWKBYI0gOrx7u5XaSPl3w1"></i><i data-page-node-id="3MK8QZfedRSsKpXbj9JDl0"></i><i data-page-node-id="pCnPoTRUI6oNeivSVreiIA"></i><i data-page-node-id="EeEPqL1zwfCc1bHAy4iF4O"></i><i data-page-node-id="iNLwtWrs0RvPK4F0Ox6ukc"></i></div>
   <div class="island" data-page-node-id="I61GY7uhLAgvHBlvDkCgrV"></div>
   <div class="statusbar" data-page-node-id="H6RvOSdUaKDq31k0e7myCK">
     <span id="clock" data-page-node-id="hMnMwQWlHziAaEQXZwv41i">9:41</span>
@@ -1027,9 +1039,20 @@ function skey(t,s){ return norm(t).slice(0,40)+"|"+norm(s).slice(0,30); }
 function streamOf(s){ if(s&&s.id) return s.id; const e=s&&DB.st[skey(s.t,s.s)]; return e?e.wy:null; }
 function stInfo(s){ return (s&&DB.st[skey(s.t,s.s)])||null; }
 function cmtOf(s){ return (s&&DB.cmt[skey(s.t,s.s)])||null; }
-/* 歌词：先看包内快照，没有则等实时拉取（undefined=还没取过，null=取过但没有） */
-function lyricOf(s){ const k=skey(s.t,s.s); const hit=DB.lyr&&DB.lyr[k]; if(hit) return hit;
-  return (k in LYRLIVE.cache) ? LYRLIVE.cache[k] : undefined; }
+/* 歌词：先看包内快照，没有则等实时拉取（undefined=还没取过，null=取过但没有）
+   2026-10-06 修「词不同步不对版」：取流用网易云 id，取词却按「歌名|歌手」查快照，
+   两把尺子量同一首歌 → 翻唱版/VIP 歌拿到的是别人版本的词，时间轴天然对不上。
+   现在统一成「id 优先、名字兜底」：与 streamOf() 同源，取到哪一版的音频就用哪一版的词。 */
+function lyrKey(s){ const id=streamOf(s); return id?("i:"+id):("n:"+skey(s.t,s.s)); }
+function lyricOf(s){ const k=lyrKey(s);
+  if(LYRLIVE.cache && (k in LYRLIVE.cache)) return LYRLIVE.cache[k];
+  const nk="n:"+skey(s.t,s.s);
+  if(LYRLIVE.cache && (nk in LYRLIVE.cache)) return LYRLIVE.cache[nk];
+  const hit=DB.lyr&&DB.lyr[k]; if(hit) return hit;
+  const hn=DB.lyr&&DB.lyr[nk]; if(hn) return hn;
+  /* 兼容老格式（纯名字键）——线上已有 1290 首按此存 */
+  const old=DB.lyr&&DB.lyr[skey(s.t,s.s)]; if(old) return old;
+  return undefined; }
 /* 兜底直链：网易云免签外链（匿名恒为 128k，永远可用，桥挂了也不会没声） */
 function srcUrl(s){ const id=streamOf(s); return id?("https://music.163.com/song/media/outer/url?id="+id+".mp3"):""; }
 
@@ -1430,7 +1453,8 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   paint(){
     const s=this.cur(); if(!s) return;
     const cov=s.cov||ph(s.t), info=stInfo(s);
-    $("#miniCov").src=cov; $("#miniT").textContent=s.t; $("#miniS").textContent=s.s+(s.a?" · "+s.a:"");
+    $("#miniCov").src=cov; $("#miniT").textContent=s.t;
+    const mS=$("#miniS"); mS.textContent=s.s+(s.a?" · "+s.a:""); mS._lt=mS.textContent;
     $("#plCov").src=cov; $("#plT").innerHTML=esc(s.t)+(isCv(s.t,s.s,s.a)?'<span class="tag-cv">翻唱</span>':""); $("#plS").textContent=s.s+(s.a?" · "+s.a:"");
     $("#plFromLabel").textContent="正在播放"; $("#plFromSub").textContent=this.ctx;
     const qb=$("#plQual");
@@ -1441,9 +1465,8 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     $("#miniBar").style.width=(f*100)+"%";
     $("#plFg").style.width=(f*100)+"%"; $("#plKnob").style.left=(f*100)+"%";
     $("#plCur").textContent=fmt(this.t); $("#plTot").textContent=fmt(this.tot);
-    const pi=this.playing?ICONS.pause:ICONS.play;
-    $("#plPI").outerHTML=pi.replace("<svg","<svg id=\"plPI\"");
-    $("#miniPI").outerHTML=pi.replace("<svg","<svg id=\"miniPI\"");
+    this._lastCur=fmt(this.t); this._lastTot=fmt(this.tot);
+    this.syncIcon();
     // 收藏 / 下载 状态回填
     const on=Store.favOn(s);
     const f1=$("#plFavBtn"), f2=$("#plActFav"), d1=$("#plActDl");
@@ -1451,13 +1474,52 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     if(f2) f2.classList.toggle("on", on);
     if(d1) d1.classList.toggle("on", Store.isDl(s));
     if(document.getElementById("plLyric")) renderLyricIfNeeded(s);
-  }
+  },
+  /* 播放/暂停图标：只在状态真的变了（或节点被重建过）时才替换。
+     旧版每次 timeupdate 都无条件 outerHTML 整体换掉两个 SVG —— 等于一秒销毁重建 8 次 DOM。 */
+  syncIcon(){
+    const has=$("#plPI")&&$("#miniPI");
+    if(this._pi===this.playing && has) return;
+    this._pi=this.playing;
+    const pi=this.playing?ICONS.pause:ICONS.play;
+    const a=$("#plPI"), b=$("#miniPI");
+    if(a) a.outerHTML=pi.replace("<svg","<svg id=\"plPI\"");
+    if(b) b.outerHTML=pi.replace("<svg","<svg id=\"miniPI\"");
+  },
+  /* ★ 发热治理③：进度心跳（timeupdate）专用轻量路径。
+     旧版每次 timeupdate 直接调 paint() —— 全量重绘（标题/歌手/音质/收藏态/歌词重排 + 两次 outerHTML），
+     一秒跑 4~8 次，还夹着 O(n) 的歌词扫描。现在只动「真的会变的三个数」：
+     两根进度条 + 两个时间文案；歌词按 220ms 节流；图标按状态去重；
+     并用 requestAnimationFrame 把同一帧内的多次事件合并成一次。 */
+  tickProgress(){
+    const a=this.au(); if(!a) return;
+    this.t=a.currentTime||0;
+    if(a.duration&&isFinite(a.duration)) this.tot=a.duration;
+    const f=this.tot?Math.min(1,this.t/this.tot):0, pc=(f*100)+"%";
+    const mb=document.getElementById("miniBar"); if(mb) mb.style.width=pc;
+    const pf=document.getElementById("plFg"); if(pf) pf.style.width=pc;
+    const pk=document.getElementById("plKnob"); if(pk) pk.style.left=pc;
+    const c=fmt(this.t), cs=document.getElementById("plCur");
+    if(cs&&this._lastCur!==c){ this._lastCur=c; cs.textContent=c; }
+    const tt=fmt(this.tot), ts=document.getElementById("plTot");
+    if(ts&&this._lastTot!==tt){ this._lastTot=tt; ts.textContent=tt; }
+    this.syncIcon();
+    MS.position();
+    const now=(window.performance&&performance.now)?performance.now():Date.now();
+    if(now-(this._lyrAt||0)>=220){ this._lyrAt=now; syncLyric(this.t); }
+  },
 };
 
 /* <audio> 事件 → 真进度 / 真结束 / 真错误兜底 */
 (function(){
   const a=document.getElementById("au"); if(!a) return;
-  a.addEventListener("timeupdate",()=>{ P.t=a.currentTime||0; if(a.duration&&isFinite(a.duration)) P.tot=a.duration; P.paint(); syncLyric(P.t); MS.position(); });
+  // ★ 发热治理③：timeupdate 走「合并到一帧一次 + 轻量路径」。
+  //   同一帧内多次事件只处理一次；页面不可见时 rAF 不触发 → 后台播放零渲染开销。
+  let tickQ=false;
+  a.addEventListener("timeupdate",()=>{
+    if(tickQ) return; tickQ=true;
+    requestAnimationFrame(()=>{ tickQ=false; P.tickProgress(); });
+  });
   a.addEventListener("loadedmetadata",()=>{ if(a.duration&&isFinite(a.duration)) P.tot=a.duration; P.paint(); });
   a.addEventListener("play",()=>{ P.playing=true; P.paint(); MS.playback("playing"); });
   a.addEventListener("pause",()=>{ P.playing=false; P.paint(); MS.playback("paused"); });
@@ -1512,15 +1574,34 @@ let _msKey="";
    ===================================================================== */
 /* 实时歌词拉取：包内快照没有的歌，用原生桥按需取（缓存一次，永不重复请求） */
 const LYRLIVE={ cache:{}, tried:{} };
+/* 纯 HTTP 兜底取词（无原生桥时用；歌词接口 CORS 开放，Web 也能直取）
+   走两次：lv=1 原文 + tv=-1 翻译，与原生桥 DwgNet.swift 口径一致 */
+LYRLIVE.http = async function(sid){
+  try{
+    const u="https://music.163.com/api/song/lyric?id="+sid+"&lv=1&kv=1&tv=-1";
+    const j=await (await fetch(u,{mode:"cors"})).json();
+    const l=(j&&j.lrc&&j.lrc.lyric)||"", t=(j&&j.tlyric&&j.tlyric.lyric)||"";
+    if(!l && !t) return null;
+    return {l:l, t:t, src:"wy-http"};
+  }catch(e){ return null; }
+};
 LYRLIVE.fetch = async function(s){
-  const k=skey(s.t,s.s);
-  if(this.tried[k] || !Native.ok) return;
-  const sid=streamOf(s); if(!sid) return;
+  const k=lyrKey(s);                     /* id 优先：与取流同源，保证「这版音频配这版词」 */
+  if(this.tried[k]) return;
+  const sid=streamOf(s);
+  if(!sid){ this.tried[k]=1; this.cache[k]=null; return; }  /* 无 id → 标记取过，避免永远「正在取歌词…」 */
   this.tried[k]=1;
-  const r=await Native.call("lyric",{id:sid}, 8000);
-  this.cache[k] = (r && r.l) ? {l:r.l, t:r.t||"", src:"live"} : null;
+  /* 桥可用走桥（更稳）；桥不可用（Web 预览/桥未就绪）退回纯 HTTP —— 歌词接口 CORS 开放 */
+  let r=null;
+  if(Native.ok){ r=await Native.call("lyric",{id:sid}, 8000).catch(()=>null); }
+  if(!r || !r.l){ r=await LYRLIVE.http(sid); }
+  /* 双写：id 键（新，精确）+ 名字键（兼容包内快照的旧键） */
+  const rec = (r && r.l) ? {l:r.l, t:r.t||"", src:"live"} : null;
+  this.cache[k]=rec;
+  const nk="n:"+skey(s.t,s.s);
+  if(nk!==k) this.cache[nk]=rec;
   const cur=P.cur();
-  if(cur && skey(cur.t,cur.s)===k){ LY.key=""; renderLyricIfNeeded(cur); }
+  if(cur && lyrKey(cur)===lyrKey(s)){ LY.key=""; renderLyricIfNeeded(cur); }
 };
 
 const LY = { lines:[], idx:-1, key:"" };
@@ -1545,7 +1626,7 @@ function mergeTrans(lines, transTxt){
 }
 function renderLyricIfNeeded(s){
   if(!s||!s.t) return;
-  const key=skey(s.t,s.s);
+  const key=lyrKey(s);                   /* 与 lyricOf 同一把尺子，避免「渲染了别人版本的词」 */
   if(LY.key===key) return;
   LY.key=key; LY.idx=-1;
   const box=document.getElementById("lyrBox"); if(!box) return;
@@ -1559,7 +1640,14 @@ function renderLyricIfNeeded(s){
   }
   if(!d){
     LY.lines=[]; box.style.transform="translateY(0)";
-    box.innerHTML='<div class="lyr-empty">这首歌暂无歌词<br>纯音乐或冷门曲目</div>';
+    /* 区分「取过但没有」与「取失败了」—— 后者可点重试，不让主人对着空白猜 */
+    const failed = LYRLIVE.tried[key] && !LYRLIVE.cache[key] && !Native.ok;
+    box.innerHTML = failed
+      ? '<div class="lyr-empty">歌词没取到<br>点这里重试</div>'
+      : '<div class="lyr-empty">这首歌暂无歌词<br>纯音乐或冷门曲目</div>';
+    if(failed){
+      box.onclick=()=>{ LYRLIVE.tried[key]=0; LY.key=""; renderLyricIfNeeded(s); };
+    }
     return;
   }
   let lines=mergeTrans(parseLRC(d.l), d.t);
@@ -1579,8 +1667,11 @@ function renderLyricIfNeeded(s){
 function miniLyric(i){
   const el=document.getElementById("miniS"); if(!el) return;
   const l=LY.lines[i];
-  if(l && l.s){ el.textContent="♪ "+l.s; return; }
-  const s=P.cur(); if(s) el.textContent=s.s+(s.a?" · "+s.a:"");
+  let txt;
+  if(l && l.s) txt="♪ "+l.s;
+  else{ const s=P.cur(); txt=s?(s.s+(s.a?" · "+s.a:"")):""; }
+  if(el._lt===txt) return;        // ★ 文案没变就不写 DOM（旧版每 220ms 无条件重写一次）
+  el._lt=txt; el.textContent=txt;
 }
 function syncLyric(t){
   let i=-1;
@@ -1669,22 +1760,48 @@ function applyTheme(it){
   // 有预计算主色用主色；没有则回落到品牌色相附近的稳定变体（绝不出现刺眼的随机色）
   const h = (it && it.hue!=null) ? it.hue : 348 + (hashHue(it? (it.t||"")+(it.s||"") : "x") % 22) - 6;
   const R = document.documentElement.style;
+  // 主色：全站 16 处消费者 → 留在 :root，保留平滑过渡（值不变）
   R.setProperty("--accent", hslc(h,74,58));
   R.setProperty("--accent-soft", hslc(h,74,58,.16));
-  R.setProperty("--hi", hslc(h,88,70));
-  R.setProperty("--tint1", hslc(h,38,16));
-  R.setProperty("--tint2", hslc(h,30,7));
+  // ★ 发热治理①：把「过渡」从树根挪到真正的消费者身上。
+  //   氛围光 5 个色只被 .aurora 的光斑用 → 写进 .aurora 自己的 style；
+  //   底色 2 个色只被 .screen 的背景用 → 写进 #screen 自己的 style。
+  //   这样换歌时只有这两个元素（及其子树）重算，而不是整棵文档 + 5 层 58px 模糊重栅格。
+  const A=document.querySelector(".aurora");
+  if(A){ const S=A.style;
+    S.setProperty("--a1", hslc(h,85,56));
+    S.setProperty("--a2", hslc((h+42)%360,76,60));
+    S.setProperty("--a3", hslc((h+306)%360,74,58));
+    S.setProperty("--a4", hslc((h+128)%360,64,50));
+    S.setProperty("--a5", hslc((h+206)%360,72,54));
+  }
+  const SCR=document.getElementById("screen");
+  if(SCR){ SCR.style.setProperty("--tint1", hslc(h,38,16)); SCR.style.setProperty("--tint2", hslc(h,30,7)); }
+  // 极少数树外消费者（hero 渐变底 / 品牌渐变字）仍读 :root 的 --a1/--a3：
+  // 这里补一份「不过渡」的值，颜色立刻到位（它们都是被氛围光盖住的深色叠层，瞬时切换无感）
   R.setProperty("--a1", hslc(h,85,56));
-  R.setProperty("--a2", hslc((h+42)%360,76,60));
   R.setProperty("--a3", hslc((h+306)%360,74,58));
-  R.setProperty("--a4", hslc((h+128)%360,64,50));
-  R.setProperty("--a5", hslc((h+206)%360,72,54));
 }
 
 /* ---- Hero 轮播控制器（全屏沉浸海报 · 自动轮播/滑动/点击进播放）---- */
 const Hero = { list:[], i:0, timer:null };
+/* ★ 发热治理④：主视觉「该不该动」判定。
+   旧版 heroStart() 一旦在首页挂上，全 App 生命周期内再没有任何一处会停它 ——
+   进播放器、看歌词、切到别的 Tab、甚至切到后台，每 6 秒照样换一张全尺寸海报
+   并 applyTheme() 整页换一次主题（1.5s 过渡 + 5 层 58px 模糊重栅格）。
+   挂在那儿不动也在发热，主要就是这里。 */
+function heroLive(){
+  try{
+    if(document.visibilityState && document.visibilityState!=="visible") return false;
+    const on=id=>{ const n=document.getElementById(id); return !!(n&&n.dataset.in==="1"); };
+    if(on("player")||on("mvplayer")) return false;
+    const home=document.querySelector('.page[data-base="1"][data-id="home"]');
+    return !!(home && home.dataset.under!=="1" && home.dataset.in==="1");
+  }catch(e){ return false; }
+}
 function heroGo(i){
   const L = Hero.list; if(!L.length) return;
+  if(!heroLive()) return;                 // 不在首页 / 有覆盖层 / 页面不可见 → 不换图、不换主题
   Hero.i = ((i % L.length) + L.length) % L.length;
   document.querySelectorAll(".hero-slide").forEach((s,k)=>s.classList.toggle("on",k===Hero.i));
   const cur = L[Hero.i];
@@ -1699,6 +1816,12 @@ function heroStart(){
   Hero.timer = setInterval(()=>heroGo(Hero.i+1), 6000);
 }
 function heroStop(){ if(Hero.timer){ clearInterval(Hero.timer); Hero.timer=null; } }
+/* ★ 发热治理④b：切后台（锁屏/回桌面）立刻停轮播 —— 音频还在放，但主视觉不必再渲染。
+   回到前台且人在首页时再恢复。 */
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible"){ if(Hero.list.length && !Hero.timer) heroStart(); }
+  else heroStop();
+});
 function heroMount(node){
   const box = node.querySelector(".hero"); if(!box) return;
   Hero.list = DB.heroList||[];
