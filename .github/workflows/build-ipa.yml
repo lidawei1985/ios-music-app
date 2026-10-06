@@ -104,6 +104,9 @@ jobs:
       # 版本号取内容 sha256 前 12 位：内容一变版本必变，杜绝「改了内容忘了改版本号」。
       - name: 发布内核热更新清单
         if: github.ref == 'refs/heads/main'
+        env:
+          # 建 release 需要 token（contents: write 已声明）。gh CLI 在 macos runner 上预装。
+          GH_TOKEN: ${{ github.token }}
         # 注意：shell 里 $VAR 后面**绝对不要紧跟中文/全角字符**。
         # bash 解析变量名时会把多字节首字节吞进名字，set -u 下直接
         # 报 "VER?: unbound variable"（早期版本就踩了这个坑）。
@@ -138,14 +141,37 @@ jobs:
             git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW} [skip ci]"
             git push
             echo "pushed kernel v${VER}"
+
+            # ★★ 建 release：让 jsDelivr 的 @latest 别名解析到本次内核。
+            #   为什么必须（不然这次改内核等于白推）：
+            #     jsDelivr 官方缓存策略 —— 分支引用（@main）硬缓存 **12 小时**且 purge 无效；
+            #     版本别名（@latest）属可 purge 类型。端上 KUP 优先用 @latest，而 @latest
+            #     的语义是「仓库里最新的 release」—— 仓库里没有 release 时它**解析不出来**，
+            #     jsDelivr 会直接挂起（实测 @3.7 curl 超时 000），端上要白等 2 分钟才回落 @main。
+            #   所以每轮出包必须顺手把 release 顶到最新，@latest 才有东西可指。
+            #   tag 用 GITHUB_RUN_NUMBER 递增（保证 tag 名每次不同 → jsDelivr 对新 tag 立即回源，
+            #   连 purge 都不必等）；语义化三段式 v1.0.N 满足 purge 对 semver 的要求。
+            TAG="v1.0.${GITHUB_RUN_NUMBER}"
+            gh release create "${TAG}" --target main \
+              --title "kernel ${VER}" \
+              --notes "内核热更新锚点。内容 sha256 前 12 位 = ${VER}，${BYTES} 字节。jsDelivr @latest 指向本 release。" \
+              && echo "release ${TAG} created -> main" \
+              || echo "release ${TAG} 已存在或创建失败（不阻断出包）"
           fi
 
-      - name: 刷新 CDN 缓存（让新版立刻可拉）
+      - name: 刷新 CDN 缓存（只打 @latest —— 分支 @main 打了也没用）
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         run: |
-          for f in kernel/dist.html kernel/kernel.json; do
+          # ★★ 为什么目标从 @main 改成 @latest（2026-10-06 修正）：
+          #   jsDelivr 官方文档写明 purge 只对「版本别名 / semver release」生效，
+          #   对**分支引用无效**（"Valid semver releases must be used for purge to work"）。
+          #   原来这两行打 @main，实测 purge 回 200 但 20 分钟后 gcore 仍在发两代前的版本
+          #   —— 一直是个安慰剂。现在端上走 @latest，这里打 @latest 才真正有效。
+          #   双保险：新 tag 名（v1.0.N）本身就是 jsDelivr 从未见过的引用，天然立即回源；
+          #   purge @latest 则是刷新「别名→新 tag」的解析缓存。
+          for f in kernel/kernel.json kernel/dist.html; do
             curl -sS --max-time 30 \
-              "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" -o /dev/null \
-              && echo "purged: $f" || echo "purge skipped: $f"
+              "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@latest/$f" -o /dev/null \
+              && echo "purged @latest: $f" || echo "purge skipped: $f"
           done
