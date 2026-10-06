@@ -14,7 +14,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # 需要 write：内核热更步骤要把 kernel/dist.html + kernel/kernel.json 推回本仓库，
+  # 手机端下次冷启动才能从 CDN 拉到新版（否则 github-actions[bot] 403）。
+  contents: write
 
 jobs:
   build:
@@ -130,7 +132,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "kernel unchanged, skip commit"
           else
-            git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW}"
+            # [skip ci] 至关重要：本文件的触发器是 push:main，若不加标记，
+            # 这次「发布内核」的提交会再次触发本工作流 → 再发布 → 死循环。
+            # 内核产物只在用户改内核的那一次构建里更新，正是一次性、非自反的。
+            git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW} [skip ci]"
             git push
             echo "pushed kernel v${VER}"
           fi
