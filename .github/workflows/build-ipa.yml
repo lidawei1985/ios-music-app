@@ -23,7 +23,17 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
+      # ★★★ 用 deploy key（而非默认的 GITHUB_TOKEN）检出 —— 这是「内核推送后能否立刻生效」的关键。
+      #   判决性实测（2026-10-06，同一时刻并发对比）：
+      #     · 用 GITHUB_TOKEN 推的提交**不触发 jsDelivr 的 push webhook** → CDN 只能等
+      #       分支缓存 12 小时自然过期（实测本仓 @main 卡在旧内核 4963b79d8e55）；
+      #     · 用真凭据推（SSH deploy key）→ webhook 触发回源，**秒级可见**
+      #       （同轮实测：cloud 仓用 SSH 推完，@main 的 count 立刻从 11744 变 17117）。
+      #   ssh-key 为空时 checkout 自动回落 https（不会因缺 secret 而失败），
+      #   但那样本次内核更新就要等 12 小时才可见 —— 所以 IOS_DEPLOY_KEY 必须配。
       - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.IOS_DEPLOY_KEY }}
 
       - name: 准备 xcodegen（预装优先 → brew → 官方包兜底）
         run: |
@@ -139,39 +149,37 @@ jobs:
             # 这次「发布内核」的提交会再次触发本工作流 → 再发布 → 死循环。
             # 内核产物只在用户改内核的那一次构建里更新，正是一次性、非自反的。
             git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW} [skip ci]"
+            # ★ 推送凭据决定"多久可见"：deploy key（顶部 checkout 配的）→ 立即；
+            #   回落 GITHUB_TOKEN → 需等分支缓存 12 小时。见文件顶部说明。
             git push
             echo "pushed kernel v${VER}"
 
-            # ★★ 建 release：让 jsDelivr 的 @latest 别名解析到本次内核。
-            #   为什么必须（不然这次改内核等于白推）：
-            #     jsDelivr 官方缓存策略 —— 分支引用（@main）硬缓存 **12 小时**且 purge 无效；
-            #     版本别名（@latest）属可 purge 类型。端上 KUP 优先用 @latest，而 @latest
-            #     的语义是「仓库里最新的 release」—— 仓库里没有 release 时它**解析不出来**，
-            #     jsDelivr 会直接挂起（实测 @3.7 curl 超时 000），端上要白等 2 分钟才回落 @main。
-            #   所以每轮出包必须顺手把 release 顶到最新，@latest 才有东西可指。
-            #   tag 用 GITHUB_RUN_NUMBER 递增（保证 tag 名每次不同 → jsDelivr 对新 tag 立即回源，
-            #   连 purge 都不必等）；语义化三段式 v1.0.N 满足 purge 对 semver 的要求。
+            # ★★ 建 release：给每版内核留一个**不可变锚点**，便于回溯/按 tag 固定引用。
+            #   注意：端上 KUP 已不再依赖 @latest —— 实测别名解析被顽固缓存，
+            #   purge 打不动，且别名缓存 7 天比分支 12 小时**更差**。
+            #   现在端上走 @main + deploy key 推送触发 webhook，秒级生效；
+            #   release 退居为版本记录与应急锚点。
+            #   tag 用 GITHUB_RUN_NUMBER 递增（每次不同 → jsDelivr 对新 tag 立即回源），
+            #   语义化三段式 v1.0.N 也满足 purge 对 semver 的要求。
             TAG="v1.0.${GITHUB_RUN_NUMBER}"
             gh release create "${TAG}" --target main \
               --title "kernel ${VER}" \
-              --notes "内核热更新锚点。内容 sha256 前 12 位 = ${VER}，${BYTES} 字节。jsDelivr @latest 指向本 release。" \
+              --notes "内核热更新锚点。内容 sha256 前 12 位 = ${VER}，${BYTES} 字节。" \
               && echo "release ${TAG} created -> main" \
               || echo "release ${TAG} 已存在或创建失败（不阻断出包）"
           fi
 
-      - name: 刷新 CDN 缓存（只打 @latest —— 分支 @main 打了也没用）
+      - name: 兜底刷新 jsDelivr（对分支无效，纯保险）
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         run: |
-          # ★★ 为什么目标从 @main 改成 @latest（2026-10-06 修正）：
-          #   jsDelivr 官方文档写明 purge 只对「版本别名 / semver release」生效，
-          #   对**分支引用无效**（"Valid semver releases must be used for purge to work"）。
-          #   原来这两行打 @main，实测 purge 回 200 但 20 分钟后 gcore 仍在发两代前的版本
-          #   —— 一直是个安慰剂。现在端上走 @latest，这里打 @latest 才真正有效。
-          #   双保险：新 tag 名（v1.0.N）本身就是 jsDelivr 从未见过的引用，天然立即回源；
-          #   purge @latest 则是刷新「别名→新 tag」的解析缓存。
+          # ★★ 2026-10-06 实测：purge 对**分支引用无效**
+          #   （官方原文 "Valid semver releases must be used for purge to work"）。
+          #   这里打 @main 属安慰剂，保留只为"万一哪天策略变了"。
+          #   真正让内核秒级生效的是上一段的 deploy key 推送：
+          #   真凭据 push → 触发 jsDelivr 的 GitHub webhook → CDN 立即回源。
           for f in kernel/kernel.json kernel/dist.html; do
             curl -sS --max-time 30 \
-              "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@latest/$f" -o /dev/null \
-              && echo "purged @latest: $f" || echo "purge skipped: $f"
+              "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" -o /dev/null \
+              && echo "purged @main: $f" || echo "purge skipped: $f"
           done

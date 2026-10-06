@@ -1227,22 +1227,34 @@ window.__dwgCb = function(id, b64){
    ===================================================================== */
 const KUP = {
   /* 云端内核目录：内核源码仓库（ios-music-app）的 kernel/ 目录。
-     ★★ 2026-10-06 从 @main（分支）换成 @latest（版本别名）。为什么：
-       jsDelivr 官方缓存策略原文 —— "Branches - 12 hours"、"Version aliasing - 7 days ...
-       with the option to purge"、"Valid semver releases must be used for purge to work"。
-       即：分支引用被 CDN 缓存后**固定 12 小时**，而且 purge 对分支**无效**
-       （实测：purge 回 200，20 分钟后 gcore 仍在发两代前的版本，而 cdn 节点已是新版）。
-       12 小时意味着「改完内核推上去，用户手机要等半天才可能收到」，不可接受。
-       改用 @latest：虽然默认缓存 7 天，但**可 purge** —— CI 每轮出包后打一个 release tag
-       并立即 purge，端上分钟级就能拿到新内核。
+     ★★★ 2026-10-06 二次实测修正：@latest 方案作废，改回 @main。
+       判决性实测（真值取 api.github.com，零缓存；同一时刻并发对比）：
+         真值               version=0a4a3eb50f03   ← 最新
+         @latest            version=38fbc94aaf49   ← 旧（别名解析被顽固缓存，purge 打不动）
+         @main              version=4963b79d8e55   ← 更旧
+         @v1.0.21           version=0a4a3eb50f03   ← 立即生效 ✅
+         @main?t=<时间戳>    version=4963b79d8e55   ← query 不能绕缓存
+         @latest?t=<时间戳>  version=38fbc94aaf49   ← query 不能绕缓存
+       结论：jsDelivr 对「分支/别名」的缓存，purge 与 query 都击不穿；
+             只有**从未见过的具体引用**（新 semver tag / commit sha）才立即回源。
+             → @latest 既没兑现「分钟级」，缓存时长还从分支的 12 小时变成别名的 7 天，
+               **比 @main 更差**，且依赖仓库里存在 release（解析不出会挂起）。
+              故回退 @main —— 它是分支，12 小时自然过期，是**确定性**上限，永不断供。
+     ★★ 同轮更关键的发现（这才是「推送后能否立刻看到」的钥匙）：
+        cloud 仓（ios-music-api）的 @main **推送后立即生效** —— 刚推完就实测到新内容
+        （count 从 11744 直接变 17117）。而本仓 @main 曾卡满 12 小时。
+        差异在**推送凭据**：本仓此前由 CI 用 GITHUB_TOKEN 推，不触发 jsDelivr 的 push
+        webhook（CDN 只能等 12 小时自然过期）；cloud 仓那次是用 SSH 真凭据推的，
+        webhook 触发回源，秒级可见。
+        → 已把 CI 改成用 deploy key 推送（见 build-ipa.yml），内核更新同样秒级生效。
      ★ 为什么用 gcore 节点：实测国内 cdn.jsdelivr.net 拉大文件会回源 raw.githubusercontent.com
-       （被墙，25s 只下到 176KB），gcore 缓存后 2.6s / 2.5MB/s。gcore 是唯一稳的节点。
-     ★ 为什么必须留 fallbackBase：@latest 依赖仓库里存在 release。万一 tag 被误删、或 CI 建
-       release 失败，jsDelivr 对解析不出的引用会**挂起**（实测 @3.7 直接 curl 超时 000），
-       端上就一直拉不到清单。故 @latest 失败即回落 @main —— 慢 12 小时，但永不断供
+       （被墙，25s 只下到 176KB），gcore 缓存后 2.6s / 2.5MB/s。gcore 是国内唯一稳的节点。
+     ★ 为什么 fallbackBase 换成 fastly：不再依赖第二种「引用」，改为**节点级冗余**。
+       两个 base 指向同一 @main，只是节点不同 —— 单节点抖动时换节点重试即可。
+       两级都拿不到 → 原生 kcheck 返回 ok=false，端上继续用包内内核，不影响启动
        （原则：宁可慢，不能断）。 */
-  base: "https://gcore.jsdelivr.net/gh/lidawei1985/ios-music-app@latest/kernel/",
-  fallbackBase: "https://gcore.jsdelivr.net/gh/lidawei1985/ios-music-app@main/kernel/",
+  base: "https://gcore.jsdelivr.net/gh/lidawei1985/ios-music-app@main/kernel/",
+  fallbackBase: "https://fastly.jsdelivr.net/gh/lidawei1985/ios-music-app@main/kernel/",
   KEY:"dwg.kup.last",          // 上次检查时间，避免每次启动都查
   everyMs: 6*3600*1000,        // 6 小时最多查一次（不打扰、省流量）
   check(force){
@@ -1254,16 +1266,14 @@ const KUP = {
     // 延后 8 秒：绝不和首屏渲染、曲库预取抢资源
     setTimeout(()=>{
       const pull=b=>Native.call("kcheck", {base:b}, 120000);
-      /* ★★ 2026-10-06 回落条件必须是 r.updated，**不能**是 r.ok：
-           · @latest 是「版本别名」，jsDelivr 对它缓存 7 天，且**只有 purge 才会刷新**。
-             若某轮 CI 的 purge 没打成功，@latest 会长时间发旧清单 —— 此时原生比对
+      /* ★★ 回落判据必须是 r.updated，**不能**是 r.ok：
+           · 两个 base 现在指向同一 @main，只是节点不同，理论上内容一致；
+             但节点之间回源时间不同步（A 节点可能还在发旧清单）—— 此时原生比对
              version 与本地相同 → 返回 ok=true / updated=false。
-           · 若只看 r.ok 就直接 return，等于「@latest 一旦缓存旧内容就卡死 7 天」，
-             比改动前（@main 12 小时自然过期）**更糟**。
-           · 改成「@latest 没给出新内核就再问 @main」：@main 是分支，12 小时自然过期，
-             是**确定性**的上限 —— 于是端上要么分钟级（@latest+purge 命中）、
-             要么最坏 12 小时（@main 兜底），永远不会比改动前差。
-          成本：两次都只先拉 192 字节的 kernel.json，版本相同就不下载 6MB 内核，可忽略。 */
+           · 若只看 r.ok 就 return，会把「节点发旧清单」误判成「已是最新」而放弃换节点，
+             等于白白错过本来能拿到的内核。
+           · 所以「没给出新内核就换节点再问一次」：成本只是多拉一次 192 字节的
+             kernel.json，版本相同就不会下载 6MB 内核，可忽略。 */
       pull(this.base)
         .then(r=> (r && r.ok && r.updated) ? r : pull(this.fallbackBase))
         .then(r=>{
