@@ -23,14 +23,16 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      # ★★★ 用 deploy key（而非默认的 GITHUB_TOKEN）检出 —— 这是「内核推送后能否立刻生效」的关键。
-      #   判决性实测（2026-10-06，同一时刻并发对比）：
-      #     · 用 GITHUB_TOKEN 推的提交**不触发 jsDelivr 的 push webhook** → CDN 只能等
-      #       分支缓存 12 小时自然过期（实测本仓 @main 卡在旧内核 4963b79d8e55）；
-      #     · 用真凭据推（SSH deploy key）→ webhook 触发回源，**秒级可见**
-      #       （同轮实测：cloud 仓用 SSH 推完，@main 的 count 立刻从 11744 变 17117）。
-      #   ssh-key 为空时 checkout 自动回落 https（不会因缺 secret 而失败），
-      #   但那样本次内核更新就要等 12 小时才可见 —— 所以 IOS_DEPLOY_KEY 必须配。
+      # ★ 用 deploy key 检出（保留 ssh-key 写法，成本为零；ssh-key 为空会自动回落 https）。
+      #   ★★ 注意：早前「真凭据推送 → 触发 jsDelivr webhook → 秒级生效」这个假设**已被反证**。
+      #     反证实验（2026-10-06）：cloud 仓改用 deploy key 推后，`data/probe.json`
+      #     （**全新文件名**）7 秒即取到 ✅，但同一次提交里的 `data/assets/cv.json`
+      #     （**老 URL**）纹丝不动 → 根本不是凭据问题。
+      #     真相：jsDelivr **按 URL 缓存** —— 新 URL（新文件名/新 sha/新 tag）立即回源，
+      #     老 URL（@main / @latest）一律吃硬缓存（分支 12 小时、别名 7 天），
+      #     purge 与 ?t= 都击不穿（实测判决表见 kernel 的 KUP 注释）。
+      #   → 所以「内核推送后立刻生效」靠的是下面的**时效锚点**（kernel/win/<窗口>.js），
+      #     不是 deploy key，也不是 purge。deploy key 只解决「checkout 能走 SSH」。
       - uses: actions/checkout@v4
         with:
           ssh-key: ${{ secrets.IOS_DEPLOY_KEY }}
@@ -149,16 +151,14 @@ jobs:
             # 这次「发布内核」的提交会再次触发本工作流 → 再发布 → 死循环。
             # 内核产物只在用户改内核的那一次构建里更新，正是一次性、非自反的。
             git commit -m "kernel hot-update v${VER} (${BYTES} bytes) ${NOW} [skip ci]"
-            # ★ 推送凭据决定"多久可见"：deploy key（顶部 checkout 配的）→ 立即；
-            #   回落 GITHUB_TOKEN → 需等分支缓存 12 小时。见文件顶部说明。
+            # ★ 推送凭据（deploy key → SSH / 回落 GITHUB_TOKEN → https）只影响「能不能推上去」，
+            #   **不影响 CDN 多快可见**（反证见文件顶部注释）。别再把 deploy key 当成时效手段。
             git push
             echo "pushed kernel v${VER}"
 
-            # ★★ 建 release：给每版内核留一个**不可变锚点**，便于回溯/按 tag 固定引用。
-            #   注意：端上 KUP 已不再依赖 @latest —— 实测别名解析被顽固缓存，
-            #   purge 打不动，且别名缓存 7 天比分支 12 小时**更差**。
-            #   现在端上走 @main + deploy key 推送触发 webhook，秒级生效；
-            #   release 退居为版本记录与应急锚点。
+            # ★★ 建 release：给每版内核留一个**不可变引用锚点**，便于回溯/按 tag 固定。
+            #   注意：端上 KUP 已不再依赖 @latest —— 实测别名解析被顽固缓存（别名 7 天，
+            #   比分支 12 小时**更差**），purge 打不动。release 退居版本记录与应急锚点。
             #   tag 用 GITHUB_RUN_NUMBER 递增（每次不同 → jsDelivr 对新 tag 立即回源），
             #   语义化三段式 v1.0.N 也满足 purge 对 semver 的要求。
             TAG="v1.0.${GITHUB_RUN_NUMBER}"
@@ -169,15 +169,36 @@ jobs:
               || echo "release ${TAG} 已存在或创建失败（不阻断出包）"
           fi
 
-      - name: 兜底刷新 jsDelivr（对分支无效，纯保险）
+          # ★★★ 发布「时效锚点」—— 端上 probeTideIos() 靠它把内核更新压到秒级。
+          #   为什么必须放在**内核提交之后**再单独提交一次：
+          #     锚点里要写的是「带着新内核的那个提交」的 sha，而 sha 只有提交完才知道
+          #     （先有鸡先有蛋），所以只能两段。
+          #   为什么锚点 URL 能秒到：文件名是 10 分钟窗口（kernel/win/202610070000.js），
+          #     天生是 jsDelivr 没见过的全新 URL → 必然回源。端上拿到 sha 后把 kcheck 的
+          #     base 换成 @<sha>/kernel/（同样是全新 URL）→ 立即拿到新内核。
+          #   探不到锚点 → 端上回落 @main，只是慢，功能不受影响（宁可慢不能断）。
+          #   ★ 刻意放在 if 之外：内核这轮没变也要刷新窗口链 —— 否则「内核是上周改的、
+          #     锚点早被 prune 掉」→ 端上探不到 → 只能回落 @main 慢 12 小时。
+          KERNEL_SHA=$(git rev-parse HEAD)
+          python3 scripts/mktide.py --sha "${KERNEL_SHA}" --version "${VER}" --prune
+          git add kernel/win
+          if git diff --cached --quiet; then
+            echo "锚点无变化（同窗口内重复构建，URL 相同、内容相同）"
+          else
+            git commit -m "tide: kernel anchor @$(echo ${KERNEL_SHA} | cut -c1-10) ${NOW} [skip ci]"
+            git push
+            echo "pushed tide anchor -> $(echo ${KERNEL_SHA} | cut -c1-10)"
+          fi
+
+      - name: 兜底刷新 jsDelivr（对分支无效 —— 已由时效锚点取代，纯保险）
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         run: |
           # ★★ 2026-10-06 实测：purge 对**分支引用无效**
           #   （官方原文 "Valid semver releases must be used for purge to work"）。
           #   这里打 @main 属安慰剂，保留只为"万一哪天策略变了"。
-          #   真正让内核秒级生效的是上一段的 deploy key 推送：
-          #   真凭据 push → 触发 jsDelivr 的 GitHub webhook → CDN 立即回源。
+          #   ★ 真正让内核秒级生效的是上一步发布的**时效锚点**：
+          #     端上探到 kernel/win/<窗口>.js 里的 sha → 用 @<sha>/kernel/ 拉内核。
           for f in kernel/kernel.json kernel/dist.html; do
             curl -sS --max-time 30 \
               "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" -o /dev/null \
