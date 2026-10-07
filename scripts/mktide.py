@@ -32,7 +32,7 @@ jsDelivr 是「**按 URL** 缓存」，不是「按分支」：
 为什么必须「两段提交」
 =======================================================================
 锚点里要写的是**内核提交的 sha**，而 sha 只有提交完才知道 —— 先有鸡先有蛋。所以：
-    ① 提交 kernel/dist.html + kernel/kernel.json  → git rev-parse HEAD 得 sha A（+ [skip ci]）
+    ① 提交 kernel/dist.js + kernel/kernel.json  → git rev-parse HEAD 得 sha A（+ [skip ci]）
     ② python3 scripts/mktide.py --sha <sha A> --prune → 再提交 kernel/win/（+ [skip ci]）
 端上探到 sha A → 用 @<sha A>/kernel/ 拉内核 —— 而 sha A 正是带着新内核的那个提交。
 

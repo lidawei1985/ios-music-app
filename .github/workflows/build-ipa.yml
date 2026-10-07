@@ -112,8 +112,23 @@ jobs:
       #
       # 关键：下发给 App 的必须是**注入壳标记后**的内核（Resources/app.html，data-shell=ios），
       # 而不是仓库里的 kernel/app.html 源码（它没壳标记，App 侧的安全校验会拒收）。
-      # 所以这里把 pack.py 的产出复制成 kernel/dist.html 再发。
+      # 所以这里把 pack.py 的产出复制成 kernel/dist.js 再发。
       # 版本号取内容 sha256 前 12 位：内容一变版本必变，杜绝「改了内容忘了改版本号」。
+      #
+      # ★★★ 2026-10-07 致命修正：内核本体**不能**用 .html 后缀发布！
+      #   实测（同一提交、同一节点、并发对比）：
+      #     /kernel/dist.html  → HTTP 301 → Location: raw.githubusercontent.com/...  ❌
+      #     /kernel/dist.js    → HTTP 200 ✅（6.1MB 实测可下）
+      #     /kernel/kernel.json→ HTTP 200 ✅
+      #   原因：jsDelivr 对 .html/.htm 一律 301 重定向回源 raw.githubusercontent.com，
+      #     而 raw 从国内**完全不通**（HTTP 000 超时 20s）→ 已装用户永远下不到新内核。
+      #   为什么改后缀是安全的、且**老 App 无需重装**：
+      #     KernelUpdater.swift 里 `let file = (man["file"] as? String) ?? "app.html"`
+      #     —— 文件名**由清单决定**，不是硬编码。清单说 dist.js 它就下 dist.js。
+      #     KernelStore 的校验只看内容（data-shell="ios" / <html / </html / ≥2MB），
+      #     不认扩展名 → 内容仍是标准 HTML 内核，后缀只是给 CDN 看的「通行证」。
+      #   → App bundle 内的文件名保持 app.html 不变（打包门禁也照旧查 app.html），
+      #     只有**云端热更分发的那个副本**改成 .js。
       - name: 发布内核热更新清单
         if: github.ref == 'refs/heads/main'
         env:
@@ -129,21 +144,24 @@ jobs:
           python3 scripts/pack.py
           SRC=Resources/app.html
           [ -f "${SRC}" ] || { echo "::error::${SRC} missing"; exit 1; }
-          cp "${SRC}" kernel/dist.html
-          BYTES=$(stat -f%z kernel/dist.html)
-          SHA=$(shasum -a 256 kernel/dist.html | awk '{print $1}')
+          # ★ 后缀必须是 .js（见上方 2026-10-07 修正）：.html 会被 jsDelivr 301 到被墙的 raw。
+          cp "${SRC}" kernel/dist.js
+          BYTES=$(stat -f%z kernel/dist.js)
+          SHA=$(shasum -a 256 kernel/dist.js | awk '{print $1}')
           VER=${SHA:0:12}
           NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-          printf '{\n  "version": "%s",\n  "file": "dist.html",\n  "bytes": %s,\n  "sha256": "%s",\n  "updated": "%s"\n}\n' \
+          printf '{\n  "version": "%s",\n  "file": "dist.js",\n  "bytes": %s,\n  "sha256": "%s",\n  "updated": "%s"\n}\n' \
             "${VER}" "${BYTES}" "${SHA}" "${NOW}" > kernel/kernel.json
 
-          echo "kernel.json -> v${VER} (${BYTES} bytes, kernel/dist.html)"
+          echo "kernel.json -> v${VER} (${BYTES} bytes, kernel/dist.js)"
           cat kernel/kernel.json
 
           git config user.name "dwg-kernel-bot"
           git config user.email "dwg-kernel-bot@users.noreply.github.com"
-          git add kernel/dist.html kernel/kernel.json
+          # 清掉历史遗留的 dist.html（它已废弃：jsDelivr 对它只回 301，留着只会误导后人）
+          git rm -f --ignore-unmatch kernel/dist.html >/dev/null 2>&1 || true
+          git add kernel/dist.js kernel/kernel.json
           if git diff --cached --quiet; then
             echo "kernel unchanged, skip commit"
           else
@@ -202,7 +220,7 @@ jobs:
           #   这里打 @main 属安慰剂，保留只为"万一哪天策略变了"。
           #   ★ 真正让内核秒级生效的是上一步发布的**时效锚点**：
           #     端上探到 kernel/win/<窗口>.js 里的 sha → 用 @<sha>/kernel/ 拉内核。
-          for f in kernel/kernel.json kernel/dist.html; do
+          for f in kernel/kernel.json kernel/dist.js; do
             curl -sS --max-time 30 \
               "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" -o /dev/null \
               && echo "purged @main: $f" || echo "purge skipped: $f"
