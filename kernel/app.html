@@ -762,7 +762,20 @@ html[data-shell] .toast{top:calc(var(--safe-t) + 6px)}
      cdn 兜底（慢但活着）。**串行而非并发赛马**：并发会让三个节点同时回源、浪费流量且
      可能触发限流；串行只在前面失败时才多花一次（失败的失败很快，实测 0.9s 就 RST，
      不是干等超时），正常路径零额外成本。
-   四测修订（2026-10-07，本轮连测 10 次，节点质量已翻转）：
+      五测定案（2026-10-07 深夜 —— 找到「境内镜像」这条新路）：
+     ★ 决定性发现：jsDelivr 对 **.html/.htm 一律 301 重定向回源 raw.githubusercontent.com**，
+       而 raw 从国内完全不通（HTTP 000 超时 20s）→ 内核热更的「本体下载」这一步是**死的**。
+       实测判决表（同提交、同节点、并发对比）：
+         jsDelivr  /kernel/dist.html   → 301 → raw（死路）
+         jsDelivr  /kernel/dist.js     → 200 ✅（改后缀即绕过，老 App 因 file 来自清单而自动适配）
+         JSDMirror /kernel/dist.html   → 200，6,615,622B / 14.6s ✅（连 .html 都直出）
+       → 于是引入 **JSDMirror（cdn.jsdmirror.com）**：面向国内的 jsDelivr 镜像。
+         同一个 6.6MB 内核，jsDelivr 侧 60s 只下到 3.6MB（≈60KB/s），JSDMirror 约 450KB/s，
+         **快 7 倍以上**；而原生 httpGet 的热更下载超时是 90s —— 走 jsDelivr 根本下不完。
+       它排第一：国内唯一能把 6.6MB 在超时内下完的通道；
+       后三档 jsDelivr（gcore/cdn/fastly）保留为**跨站冗余** —— 镜像站万一停服仍有兜底。
+       （原则不变：宁可慢，不能断。）
+四测修订（2026-10-07，本轮连测 10 次，节点质量已翻转）：
      顺序改为 gcore → cdn → fastly，理由只有一个 —— **谁「失败得便宜」谁排前面**：
        gcore  挂掉时 0.83~0.92s 立刻 RST（几乎零成本），活着时大文件最快 → 保首位；
        cdn    最新实测 4/4 成功（小文件 1.8~2.7s，连 404 也这个速度）→ 提到第二；
@@ -773,6 +786,7 @@ html[data-shell] .toast{top:calc(var(--safe-t) + 6px)}
    原则仍是「宁可慢，不能断」：三档全挂时，图片回落上游 URL、数据回落包内快照。 */
 const CDN_REPO  = "lidawei1985/";
 const CDN_NODES = [
+  "https://cdn.jsdmirror.com/gh/",
   "https://gcore.jsdelivr.net/gh/",
   "https://cdn.jsdelivr.net/gh/",
   "https://fastly.jsdelivr.net/gh/"
