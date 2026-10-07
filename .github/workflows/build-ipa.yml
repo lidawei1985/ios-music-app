@@ -179,8 +179,11 @@ jobs:
           #   探不到锚点 → 端上回落 @main，只是慢，功能不受影响（宁可慢不能断）。
           #   ★ 刻意放在 if 之外：内核这轮没变也要刷新窗口链 —— 否则「内核是上周改的、
           #     锚点早被 prune 掉」→ 端上探不到 → 只能回落 @main 慢 12 小时。
+          #   ★ 2026-10-07 关键修订：加 `--back 18` —— **一次回填 18 个窗口（3 小时）**，
+          #     与数据仓（pool.yml）同一策略：否则锚点只存在于「CI 恰好跑过的那一刻」，
+          #     端上探窗口 0 大概率落空 → 内核热更静默退回 @main（慢 12 小时）。
           KERNEL_SHA=$(git rev-parse HEAD)
-          python3 scripts/mktide.py --sha "${KERNEL_SHA}" --version "${VER}" --prune
+          python3 scripts/mktide.py --sha "${KERNEL_SHA}" --version "${VER}" --back 18 --prune
           git add kernel/win
           if git diff --cached --quiet; then
             echo "锚点无变化（同窗口内重复构建，URL 相同、内容相同）"
