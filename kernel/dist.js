@@ -1247,7 +1247,9 @@ const CATALOG = {
     this.busy.set(i,p); return p;
   },
   /* 目录记录 → 内核统一的歌曲结构（带 .id 即可直接出流） */
-  map(rec){ return {t:rec.n, s:rec.a, a:rec.b||"", cov:rec.p||"", dur:Math.round((rec.d||0)/1000), id:rec.i, cat:true}; },
+  /* ★ 2026-10-07：cv/ov 必须透传 —— 否则曲库路径「原唱置顶」完全失效（srchRank 拿不到 cv，cv===2 的 +6 重罚永不触发）。
+     两个来源都读：shard 记录自带 cv/ov；索引命中 h 也带 cv/ov（见调用点）。 */
+  map(rec){ return {t:rec.n, s:rec.a, a:rec.b||"", cov:rec.p||"", dur:Math.round((rec.d||0)/1000), id:rec.i, cat:true, cv:+(rec.cv||0), ov:+(rec.ov||0), src:rec.src||""}; },
   /* 索引块里扫关键词：命中落在「歌名/歌手」两段内才算，避免撞上 id/片号造成假命中 */
   search(q, cap){
     const nq=norm(q); if(!nq || !this.idxTxt.length) return [];
@@ -1265,11 +1267,28 @@ const CATALOG = {
         while(k<3){ const s2=txt.indexOf(CSEP, cut); if(s2<0){ cut=txt.length; break; } cut=s2+1; k++; }
         if(p-ls>=cut) continue;                           // 命中在 id/片号/原名段 → 不是歌名/歌手命中
         const f=txt.slice(ls,le).split(CSEP);
-        const id=+f[2]; if(!id || seen.has(id)) continue;
+        /* ★ 2026-10-07 多源 id 血案：`+f[2]` 对**超长 id** 会丢精度。
+           咪咕 contentId 是 18 位（600930000002751847），远超 JS 的 MAX_SAFE_INTEGER
+           （2^53-1 = 9007199254740991）→ `+` 一转就变成 …751900，请求错 id、静默无声。
+           B 站 bvid 是字母串，`+` 直接 NaN → 被下面的 `if(!id)` 静默丢掉。
+           判据：**≤15 位纯数字**才转 Number（网易 songId / 酷我 rid 都落在这一档，与老数据同型），
+           其余一律当**不透明字符串**原样带走。写端 harvest._sid() 用同一把尺子，保证分片同型，
+           否则 refs.set(s.id) 与 refs.get(rec.i) 一个字符串一个数字，封面永远补不上。
+           cv: 1=原唱 / 2=翻唱 / 0=未知；ov: 翻唱指向的原唱 id（也可能是 18 位咪咕 id，同理处理）
+           —— 主人要求「原唱就是原唱 翻唱就是翻唱」：搜索里原唱置顶，翻唱带角标仍可见。
+           ★ trim 不是多余的：索引是**纯文本**，Windows 产物可能是 CRLF，
+             而 src 正是**每行最后一个字段** → 会带上 "\r"，`sid==="migu"` 恒 false，
+             多源歌静默退回网易直链。写端已显式 newline="\n"，这里再兜一层。 */
+        const raw=String(f[2]==null?"":f[2]).trim();
+        const id=(/^\d{1,15}$/.test(raw)) ? +raw : raw;
+        if(!id || seen.has(id)) continue;
         seen.add(id);
-        /* cv: 1=原唱 / 2=翻唱 / 0=未知；ov: 翻唱指向的原唱 songId（见 harvest _write_catalog）
-           —— 主人要求「原唱就是原唱 翻唱就是翻唱」：搜索里原唱置顶，翻唱带角标仍可见。 */
-        out.push({i:id, sh:+f[3], t:f[4]||f[0], s:f[5]||f[1], cv:+(f[6]||0), ov:+(f[7]||0)});
+        const rawOv=String(f[7]==null?"":f[7]).trim();
+        const ov=(/^\d{1,15}$/.test(rawOv)) ? +rawOv : rawOv;
+        const src=(f[8]||"").trim()||"wy";
+        /* ★ 2026-10-07 第 9 段 src（多源）：索引行从 8 段升到 9 段，老行没有 f[8] → 缺省 "wy"。
+           不解析它，多源曲目（migu/kw/bili）落库后端上仍按网易 id 拼直链 → 100% 拿不到音频。 */
+        out.push({i:id, sh:+f[3], t:f[4]||f[0], s:f[5]||f[1], cv:+(f[6]||0), ov:ov, src:src});
       }
     }
     return out;
@@ -1369,7 +1388,15 @@ function skey(t,s){ return cpslice(norm(t),40)+"|"+cpslice(norm(s),30); }
    ===================================================================== */
 function stRec(s){                                     // 取该曲的 streams 记录
   if(!s) return null;
-  if(s.id){ const r=DB.st[skey(s.t,s.s)]; if(r) return r; return {src:"wy", wy:s.id}; }
+  if(s.id){
+    const r=DB.st[skey(s.t,s.s)]; if(r) return r;
+    /* ★ 2026-10-07 多源：曲库记录自带的 src 优先于「默认网易」。
+       曲库 31k+ 首里已混入 migu/kw/bili 源（见 harvest cmd_multi），
+       它们的 id 不是网易 songId，硬拼 outer/url 必然 404 → 必须按 src 走对应直链。 */
+    const sid=String(s.src||"wy").trim()||"wy";
+    if(sid!=="wy"){ const o={src:sid}; o[sid]=s.id; return o; }
+    return {src:"wy", wy:s.id};
+  }
   return DB.st[skey(s.t,s.s)]||null;
 }
 function streamOf(s){ const r=stRec(s); return r? (r[r.src||"wy"]) : null; }
@@ -1379,10 +1406,10 @@ function streamId(s){                                  // 当前生效平台的 
 }
 function srcUrl(s){
   const r=stRec(s); if(!r) return "";
-  const sid=r.src||"wy", id=r[sid];
+  const sid=String(r.src||"wy").trim()||"wy", id=r[sid];
   if(!id) return "";
   if(sid==="kw") return "http://antiserver.kuwo.cn/anti.s?type=convert_url&rid=MUSIC_"+id+"&format=mp3&response=url";
-  if(sid==="mg") return "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenV2?contentId="+id+"&resourceType=2&format=mp3";
+  if(sid==="migu"||sid==="mg") return "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenV2?contentId="+id+"&resourceType=2&format=mp3";
   return "https://music.163.com/song/media/outer/url?id="+id+".mp3";
 }
 function cmtOf(s){ return (s&&DB.cmt[skey(s.t,s.s)])||null; }
@@ -2582,7 +2609,7 @@ function renderLib(node,q){
   if(nq && CATALOG.searchReady()){             // 有关键词就把全量曲库并进来一起搜
     const seen=new Set(list.map(s=>skey(s.t,s.s)));
     hits=CATALOG.search(q,140).filter(h=>!seen.has(skey(h.t,h.s))).slice(0,80);
-    list=list.concat(hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0})));
+    list=list.concat(hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0,cv:h.cv,ov:h.ov,src:h.src})));
   }
   if(libCvHide) list=list.filter(s=>!isCv(s.t,s.s,s.a,s.cv));   // 原唱/翻唱分离开关（含全量曲库结果）
   if(nq) list.sort((a,b)=>srchRank(a,nq)-srchRank(b,nq));  // 歌手本人原唱优先，翻唱/合辑靠后
@@ -2663,7 +2690,7 @@ function buildCatalog(){
           foot.textContent="已载入 "+st.n+" 页 · 共 "+(CATALOG.count()||0)+" 首"; return; }
         if(!CATALOG.searchReady()){ foot.textContent="搜索索引载入中 "+CATALOG.idxPct()+"%…"; CATALOG.load().then(paint); return; }
         const hits=CATALOG.search(qv,120);
-        const songs=hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0}));
+        const songs=hits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0,cv:h.cv,ov:h.ov,src:h.src}));
         box.innerHTML=""; const refs=new Map();
         songs.forEach((s,i)=>{ const row=songRow(s,i,songs,"搜索:"+qv,{sq:false,badge:"全库",badgeCls:"b-free"});
           box.appendChild(row); refs.set(s.id,{img:row.querySelector(".art"),dur:row.querySelector(".dur")}); });
@@ -2792,8 +2819,8 @@ function doSearch(q, res){
   /* 全量曲库命中：与内置快照去重后追加（索引分块载入，能搜多少算多少） */
   const seen=new Set(lib.map(s=>skey(s.t,s.s)));
   const cHits=CATALOG.searchReady()? CATALOG.search(q,220).filter(h=>!seen.has(skey(h.t,h.s)))
-    .sort((x,y)=>srchRank({t:x.t,s:x.s,a:""},nq)-srchRank({t:y.t,s:y.s,a:""},nq)).slice(0,80) : [];
-  const cSongs=cHits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0}));
+    .sort((x,y)=>srchRank({t:x.t,s:x.s,a:"",cv:x.cv,ov:x.ov},nq)-srchRank({t:y.t,s:y.s,a:"",cv:y.cv,ov:y.ov},nq)).slice(0,80) : [];
+  const cSongs=cHits.map(h=>CATALOG.map({i:h.i,n:h.t,a:h.s,b:"",p:"",d:0,cv:h.cv,ov:h.ov,src:h.src}));
   const idxFull=CATALOG.idxTotal>0 && CATALOG.idxDone>=CATALOG.idxTotal;
   let html="";
   if(arts.length){
