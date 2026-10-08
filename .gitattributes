@@ -1,3 +1,8 @@
 *.html -text
 *.png binary
 *.jpg binary
+# ★ 2026-10-08：资源/内核 JS 一律不做换行转换。
+#   本机 core.autocrlf=true → 之前 checkout 出来是 CRLF、CI(Linux) 是 LF，
+#   同一个 cat-manifest.js 本地/CI 两份字节不同 → push_to_lc.py verify 的 sha256 硬判据
+#   只能降级成「关键标记」弱判据。声明 -text 后两边都是 LF，硬判据恢复可用。
+*.js -text
