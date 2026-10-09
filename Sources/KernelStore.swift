@@ -107,6 +107,80 @@ enum KernelStore {
         }
     }
 
+    // MARK: - 曲库镜像（沙盒内核的「随包曲库」通道）
+    //
+    //  ★★★ 2026-10-09 血案修复 —— 「曲库掉到 1139 首」的真因：
+    //    内核热更成功后，主文档变成 Documents/kernel/app.html，而
+    //    loadFileURL(allowingReadAccessTo:) 给的是**内核所在目录**——
+    //    WKWebView 只放行这一个目录树。于是页面再想用 file:// 读 App 包内的
+    //    cat-*.js（曲库清单/索引/分片）就被**静默拦掉**：
+    //      CATALOG.load() 包内那份拿不到 → 退 CDN（国内 jsDelivr 慢/可能失败）
+    //      → CATALOG.ready 一直 false → 曲库页大数字回落到 DB.songs.length
+    //      → 也就是 library.json 的 1139 首（用户看到的「刚才还不是这个数字」）。
+    //    → 结论：热更内核**必须**让它能读到随包曲库，否则热更会「把曲库弄丢」。
+    //
+    //  解法：把包内 cat-*.js「接」到沙盒内核目录旁。优先**硬链接**
+    //    （bundle 与 Documents 同在 Data 卷 → 零拷贝、零额外空间），
+    //    不支持就退回复制。此后页面无论相对路径还是 __DWG_RES__ 都指向这里，
+    //    既秒开又断网可用（不再依赖 CDN 兜底）。
+    //
+    //  开销控制：仅在「包路径变了」（App 重装/升级 → bundle UUID 变）或
+    //    「同名文件大小不同」时才动盘；平时启动零拷贝。
+    static var mirrorMetaURL: URL { dir.appendingPathComponent("mirror.json") }
+
+    /// 把 App 包内的曲库分块镜像到沙盒内核目录。返回实际可用的张数。
+    @discardableResult
+    static func mirrorCatalogFromBundle() -> Int {
+        let fm = FileManager.default
+        guard let resDir = Bundle.main.resourceURL,
+              let names = try? fm.contentsOfDirectory(atPath: resDir.path) else { return 0 }
+        let cats = names.filter { $0.hasPrefix("cat-") && $0.hasSuffix(".js") }.sorted()
+        guard !cats.isEmpty else { return 0 }
+
+        // 包路径变了 → 整包都换了，旧的硬链接一律作废（否则可能指向上一个 bundle 的 inode）
+        let bundlePath = resDir.path
+        var lastBundle = ""
+        if let d = try? Data(contentsOf: mirrorMetaURL),
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            lastBundle = (o["bundle"] as? String) ?? ""
+        }
+        let bundleChanged = (lastBundle != bundlePath)
+
+        var done = 0
+        let want = Set(cats)
+        // ① 清掉包内已不存在的旧分块（分片数变少时不清理会残留、被内核误当成有效分片）
+        if let have = try? fm.contentsOfDirectory(atPath: dir.path) {
+            for n in have where n.hasPrefix("cat-") && n.hasSuffix(".js") && !want.contains(n) {
+                try? fm.removeItem(at: dir.appendingPathComponent(n))
+            }
+        }
+        // ② 逐个接过来
+        for n in cats {
+            let src = resDir.appendingPathComponent(n)
+            let dst = dir.appendingPathComponent(n)
+            guard let sa = try? fm.attributesOfItem(atPath: src.path),
+                  let sz = sa[.size] as? Int else { continue }
+            if !bundleChanged,
+               let da = try? fm.attributesOfItem(atPath: dst.path),
+               (da[.size] as? Int) == sz {
+                done += 1
+                continue                                   // 同包同大小 → 已是最新
+            }
+            try? fm.removeItem(at: dst)
+            do { try fm.linkItem(at: src, to: dst) }        // 硬链接：零拷贝零空间
+            catch { try? fm.copyItem(at: src, to: dst) }    // 跨卷/不支持 → 复制兜底
+            if fm.fileExists(atPath: dst.path) { done += 1 }
+        }
+
+        let meta: [String: Any] = ["bundle": bundlePath, "count": done,
+                                   "at": Date().timeIntervalSince1970]
+        if let j = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted]) {
+            try? j.write(to: mirrorMetaURL, options: .atomic)
+        }
+        NSLog("[DWG] 曲库镜像 → 沙盒内核目录 \(done)/\(cats.count) 个分块")
+        return done
+    }
+
     /// 当前沙盒内核的版本号（没有则空串）
     static func currentVersion() -> String {
         guard let d = try? Data(contentsOf: metaURL),

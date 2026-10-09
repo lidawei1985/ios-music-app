@@ -29,6 +29,13 @@ final class DwgNet {
             switch method {
             case "stream": out = self.stream(params)
             case "lyric":  out = self.lyric(params)
+            // ★★★ 2026-10-09 新增：通用 GET 通道 —— MV/演唱会取流就卡在这一条上。
+            //   内核 mvUrl() 早就写成 Native.call("fetch", …)，但本类一直只实现了
+            //   stream / lyric 两个 method，default 直接返回 nil →
+            //   iOS 上 MV 取流**必然失败**（页面提示「取流失败，请稍后再试」）。
+            //   补上之后，凡是「file:// 页面自己 fetch 会被 WKWebView 跨源拦死」的
+            //  接口都能走这里，以后再加此类接口**不用再重装 App**（内核热更即可）。
+            case "fetch":  out = self.fetch(params)
             default:       out = nil
             }
             DispatchQueue.main.async { done(out) }
@@ -53,6 +60,35 @@ final class DwgNet {
     private func json(_ url: String, referer: String) -> [String: Any]? {
         guard let d = get(url, referer: referer) else { return nil }
         return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
+    }
+
+    // MARK: - 通用 GET（给页面取任意跨源接口）
+
+    /// params: {url, headers?} → {status, text}
+    /// text 是响应体的 UTF-8 文本，页面侧自行 JSON.parse（内核 _mvPick 已兼容 text / json / body）。
+    private func fetch(_ p: [String: Any]) -> [String: Any]? {
+        guard let url = p["url"] as? String, !url.isEmpty, let u = URL(string: url) else { return nil }
+        // Referer：优先用页面传的（网易云接口不带会被判未授权），否则给个默认
+        var referer = "https://music.163.com/"
+        if let hs = p["headers"] as? [String: Any] {
+            if let r = hs["Referer"] as? String, !r.isEmpty { referer = r }
+            else if let r = hs["referer"] as? String, !r.isEmpty { referer = r }
+        }
+        var req = URLRequest(url: u)
+        req.timeoutInterval = 12
+        req.setValue(UA, forHTTPHeaderField: "User-Agent")
+        req.setValue(referer, forHTTPHeaderField: "Referer")
+        let sem = DispatchSemaphore(value: 0)
+        var data: Data?
+        var code = 0
+        URLSession.shared.dataTask(with: req) { d, resp, _ in
+            if let h = resp as? HTTPURLResponse { code = h.statusCode }
+            data = d
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 14)
+        guard let d = data else { return nil }
+        return ["status": code, "text": String(decoding: d, as: UTF8.self)]
     }
 
     // MARK: - 高码率直链

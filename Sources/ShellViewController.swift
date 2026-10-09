@@ -34,6 +34,20 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
         try? session.setCategory(.playback, mode: .default, options: [])
         try? session.setActive(true)
 
+        // ★★★ 2026-10-09 顺序修正（「曲库掉到 1139 首」的修复）：
+        //   必须先 resolveBootKernel() 定下「这次用沙盒内核还是包内内核」，
+        //   再据此同时决定 **读权限根** 与 **__DWG_RES__ 资源根** —— 两者必须指向同一个目录树。
+        //   旧代码把 __DWG_RES__ 固定写成 App 包目录，而 loadFileURL 的读权限只给内核所在目录：
+        //   热更后（内核在 Documents/kernel/）页面就被禁止读包内 cat-*.js →
+        //   曲库清单取不到 → 曲库页回落显示 library 的 1139 首（用户实测反馈）。
+        //   → 现在：沙盒内核时把包内曲库**镜像**到沙盒目录旁，两个根都指向它，秒开且离线可用。
+        let picked = KernelStore.resolveBootKernel()
+        let isSandbox = (picked?.source == "sandbox")
+        if isSandbox { KernelStore.mirrorCatalogFromBundle() }   // 曲库分块 → 内核同目录
+        let kernelRoot: URL = isSandbox
+            ? KernelStore.dir
+            : (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
+
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []   // 不要求手势即可播放
@@ -44,15 +58,12 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
             WKUserScript(source: "window.__PLATFORM__='ios';",
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: true))
-        // 包内资源目录（绝对值）：当内核从沙盒加载时，曲库分块 cat-*.js 仍在 App 包内，
-        // 页面相对路径会指向沙盒目录而 404 —— 把包内目录告诉页面，让它优先用这里的资源。
-        if let bundleDir = Bundle.main.resourceURL {
-            let u = bundleDir.absoluteString
-            cfg.userContentController.addUserScript(
-                WKUserScript(source: "window.__DWG_RES__='\(u)';",
-                             injectionTime: .atDocumentStart,
-                             forMainFrameOnly: true))
-        }
+        // 资源根（绝对值）：**内核所在目录**。热更后内核在沙盒，曲库分块已被镜像到同目录，
+        // 页面相对路径 / __DWG_RES__ 都能直接命中（不再跨目录、不再被权限拦）。
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: "window.__DWG_RES__='\(kernelRoot.absoluteString)';",
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: true))
         // 原生代发通道：页面用 window.webkit.messageHandlers.dwg.postMessage({id,method,params})
         cfg.userContentController.add(self, name: "dwg")
 
@@ -64,9 +75,9 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKScrip
         web.scrollView.bounces = false
         view = web
 
-        if let picked = KernelStore.resolveBootKernel() {
-            NSLog("[DWG] 内核来源: \(picked.source) → \(picked.url.lastPathComponent)")
-            web.loadFileURL(picked.url, allowingReadAccessTo: picked.url.deletingLastPathComponent())
+        if let picked = picked {
+            NSLog("[DWG] 内核来源: \(picked.source) → \(picked.url.lastPathComponent)  资源根: \(kernelRoot.absoluteString)")
+            web.loadFileURL(picked.url, allowingReadAccessTo: kernelRoot)
         } else {
             let lb = UILabel()
             lb.text = "内核缺失：Resources/app.html 未打包进 App"

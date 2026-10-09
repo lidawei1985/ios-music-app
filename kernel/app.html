@@ -1195,7 +1195,7 @@ const CATALOG = {
     this.loading=(async()=>{
       // ① 包内清单（零网络、必然最快） ② 拿不到才退 CDN
       const keep=window.__CATMAN; window.__CATMAN=null;
-      let ok=await loadScript(resURL("cat-manifest.js"), 8000);
+      let ok=await loadScript(resURL("cat-manifest.js"), 2500);
       let m=window.__CATMAN;
       if(ok && m && m.count){ this.base=""; this.mode="local"; }
       else{
@@ -2581,7 +2581,7 @@ function buildLibrary(){
         <input id="libq" placeholder="在 ${CATALOG.ready?CATALOG.fmt()+"首":"自有"}曲库里搜索" autocomplete="off"></div></div>
       <div class="sec" style="display:flex;gap:10px">
         <div class="glassbox" style="flex:1;padding:13px">
-          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px" id="libTot">${CATALOG.ready?CATALOG.count().toLocaleString():(DB.songs||[]).length}</div>
+          <div style="font-size:24px;font-weight:800;letter-spacing:-.8px" id="libTot">${CATALOG.ready?CATALOG.count().toLocaleString():"载入中…"}</div>
           <div style="font-size:12px;color:var(--txt2);margin-top:3px">曲库曲目（全量）</div></div>
         <div class="glassbox" style="flex:1;padding:13px">
           <div style="font-size:24px;font-weight:800;letter-spacing:-.8px">${DB.artistList.length}</div>
@@ -2616,7 +2616,9 @@ function buildLibrary(){
       const redo=()=>{ if(!node.isConnected){ document.removeEventListener("dwg:catidx",redo); return; }
         if(node.querySelector("#libq")) renderLib(node,q.value); };
       document.addEventListener("dwg:catidx", redo);
-      if(!CATALOG.ready) CATALOG.load().then(ok=>{ if(ok&&node.isConnected) renderLib(node,q.value); });
+      if(!CATALOG.ready) CATALOG.load().then(ok=>{ const t=node.querySelector("#libTot");
+        if(node.isConnected&&!ok&&t) t.textContent="取不到曲库清单";
+        if(ok&&node.isConnected) renderLib(node,q.value); });
       const cvf=node.querySelector("[data-cvf]");
       if(cvf) cvf.onclick=()=>{
         libCvHide=!libCvHide; localStorage.setItem("dwg_cvhide",libCvHide?"1":"0");
@@ -2998,7 +3000,7 @@ function buildMine(){
       <div class="sec"><div class="sec-hd"><h2 style="font-size:17px">内容库</h2></div></div>
       <div class="group">
         <div class="gi" data-go="library"><span class="ico">${ICONS.disc}</span><span class="lab">曲库</span>
-          <span class="val">${(typeof CATALOG!=="undefined"&&CATALOG.ready)?CATALOG.count().toLocaleString()+" 首":(DB.songs||[]).length+" 首"}</span><span class="chev">${ICONS.chev}</span></div>
+          <span class="val">${(typeof CATALOG!=="undefined"&&CATALOG.ready)?CATALOG.count().toLocaleString()+" 首":"载入中…"}</span><span class="chev">${ICONS.chev}</span></div>
         <div class="gi" data-go="mv"><span class="ico">${ICONS.play}</span><span class="lab">MV / 演唱会</span>
           <span class="val">${DB.mv?.count||0} 条</span><span class="chev">${ICONS.chev}</span></div>
         <div class="gi" data-go="chartsAll"><span class="ico">${ICONS.list}</span><span class="lab">全部榜单</span>
@@ -3252,7 +3254,9 @@ function _mvPick(r){
   }catch(e){ return null; }
   const dd=(d&&d.data)||{};
   if(d && (d.code===200||d.code==="200") && String(dd.url||"").startsWith("http")){
-    return {url:dd.url, r:dd.r||480};
+    /* ★ 2026-10-09：MV 直链一律升为 https。实测同一条 CDN 路径 http/https 都回 206 video/mp4，
+       但原生容器拿 http 明文会撞 ATS 额外风险，升 https 零成本。 */
+    return {url:String(dd.url).replace(/^http:/,"https:"), r:dd.r||480};
   }
   return null;
 }
