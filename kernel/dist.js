@@ -830,8 +830,27 @@ const CDN_NODES = [
   "https://fastly.jsdelivr.net/gh/"
 ];
 const CDN = CDN_NODES[0] + CDN_REPO + "ios-music-api@main/data/";
-// 本地化图片资源基址（与 CDN 同仓，采集器每轮把 WebP 落在这里）
-const ASSETBASE = CDN + "assets/";
+/* ★★★ 2026-10-10 图片资产已拆到**独立仓** lidawei1985/dwg-assets。
+   为什么拆：主仓 ios-music-api 同时装「曲库 + 流水线 + 图片」，实测 1002MB，撞 GitHub 1GB 软限；
+   而三类产物里只有**图片**会无限增长（曲库/歌词是分片的，片数可预期）。
+   拆开后图片独占一份 1GB 预算；不够再开 dwg-assets-b —— 往下面 ASSET_REPOS 里加一行即可，
+   端上结构不用动（主人已在星幕项目用过同一套：fc-img-xingmu-a/b 各 700MB+）。
+   实测（2026-10-10，同一份文件四节点）：
+     cdn.jsdmirror.com      200 / 12,726B / 1.6s  ✅
+     gcore.jsdelivr.net     200 / 12,726B / 3.2s  ✅
+     cdn.jsdelivr.net       301 → raw.githubusercontent（国内不通）
+     fastly.jsdelivr.net    301 → raw.githubusercontent（国内不通）
+   ↑ 后两档与**主仓旧路径的行为完全一致**（旧路径同样 301），不是本次引入的新风险；
+     端上的 CDN_NODES 顺序本来就是 jsdmirror 优先，命中前两档。
+   ★ 图片走 @main 而不是 @<sha>：图片的诉求是「图要在自己这儿、上游挂掉也不白屏」，
+     不是「分钟级可见」。新图最迟 12h（分支缓存）出现在索引里；在那之前索引查不到 →
+     assetURL 自动回落上游 URL（s.cov），**不会白屏**。 */
+const ASSET_REPOS = [
+  CDN_REPO + "dwg-assets@main/",                // 主用：图片分仓
+  CDN_REPO + "ios-music-api@main/data/assets/"  // 兜底：主仓旧路径（老资产；分仓故障时）
+];
+// 本地化图片资源基址（采集器每轮把 WebP 落到 dwg-assets）
+const ASSETBASE = CDN_NODES[0] + ASSET_REPOS[0];
 
 /* 把任意 jsDelivr URL 换到第 i 个节点（同 path）。不是 jsDelivr 的 URL 原样返回
    —— 这样上游图（gtimg/126）不会被误改，只是「不参与节点轮换」。 */
@@ -976,7 +995,16 @@ document.addEventListener("error", function(ev){
   const cur = el.getAttribute("src") || "";
   for(let i=0;i<CDN_NODES.length;i++){
     if(cur.indexOf(CDN_NODES[i])===0){
-      if(i+1 >= CDN_NODES.length) return;            // 已是最后一档 → 交给上游 URL 兜底
+      if(i+1 >= CDN_NODES.length){
+        /* ★ 2026-10-10 四档节点全试完：若这是**图片分仓**的 URL，再回落到主仓旧路径试一遍
+           （分仓刚建/刚清空、或某个仓被 GitHub 限流时，老资产仍在主仓 HEAD 里有副本）。
+           只跳一次（repoHop 标记），不来回摆 —— 与节点轮换同一条纪律：宁可慢，不能抖。 */
+        if(el.dataset.repoHop !== "1" && cur.indexOf(ASSET_REPOS[0]) >= 0){
+          try{ el.dataset.repoHop = "1"; }catch(e){}
+          el.src = cdnAlt(cur.replace(ASSET_REPOS[0], ASSET_REPOS[1]), 0);
+        }
+        return;                                     // 已是最后一档 → 交给上游 URL 兜底
+      }
       const nx = cdnAlt(cur, i+1);
       if(nx === cur) return;
       try{ el.dataset.cdnHop = String(i+1); }catch(e){}
@@ -1019,8 +1047,9 @@ async function loadAssetsIndex(){
     if(DB["assets_"+k] && DB["assets_"+k].map) continue;
     if(typeof loadScript!=="function") break;
     const g = "__DWG_ASSETS_" + k.toUpperCase();
-    // ② 云端同名文件：走 CDN_DYN（探到 sha 时是 @<sha> → 秒级刷新；否则 @main）
-    const srcs = [resURL("assets-"+k+".js"), CDN_DYN + "assets/" + k + ".js"];
+    // ② 图片分仓（dwg-assets）同名文件：@main（新图最迟 12h 出现，期间查不到就回落上游 URL）
+    // ③ 主仓旧路径：老资产副本 / 分仓故障时的兜底
+    const srcs = [resURL("assets-"+k+".js"), ASSETBASE + k + ".js", CDN_DYN + "assets/" + k + ".js"];
     for(const s of srcs){
       try{ window[g]=null; }catch(e){}
       let ok=false;
