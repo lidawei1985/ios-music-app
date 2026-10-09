@@ -628,7 +628,45 @@ html[data-shell] .toast{top:calc(var(--safe-t) + 6px)}
   .player[data-in="1"] .pctl{padding-top:8px}
   .player[data-in="1"] .pacts{margin-top:8px}
 }
+
+/* ============ iPad / 大屏适配（App 内运行 · 屏两轴均 >=700pt）============
+   iOS 侧 TARGETED_DEVICE_FAMILY 已放开 "1,2"：iPad 由「iPhone 兼容小窗」变为原生全屏，
+   本段让手机竖屏版式在 810x1080(pt) 的 iPad 上不拉伸（不再出现 810x810 巨幅海报）。
+   触发：<head> 内脚本按「两轴均 >=700」给 html 打 data-wide="1"。
+   ★ 手机永不命中：竖屏 393x852（宽<700）／横屏 852x393（高<700）→ 手机端版式零影响。 */
+html[data-shell][data-wide="1"]{
+  --con-w: min(760px, 100vw);
+  --con-pad: max(0px, calc((100vw - var(--con-w)) / 2));
+}
+/* 内容列：导航 / 正文 / 迷你播放条 / 标签栏对齐到同一列，两侧留出背景与氛围光 */
+html[data-shell][data-wide="1"] .nav{padding-left:calc(var(--con-pad) + 8px);padding-right:calc(var(--con-pad) + 8px)}
+html[data-shell][data-wide="1"] .scroll{padding-left:var(--con-pad);padding-right:var(--con-pad)}
+html[data-shell][data-wide="1"] .tabbar{padding-left:var(--con-pad);padding-right:var(--con-pad)}
+html[data-shell][data-wide="1"] .mini{left:calc(var(--con-pad) + 8px);right:calc(var(--con-pad) + 8px)}
+/* 首页主视觉：手机上 1:1 满宽，大屏不限高会变成 810x810 撑满整屏 → 限高、仍顶部对齐裁切 */
+html[data-shell][data-wide="1"] .hero{aspect-ratio:auto;height:min(44vh,420px)}
+/* 横滑卡组 / 歌手圆卡：大屏一行本就能放更多，卡片略放大以免显小 */
+html[data-shell][data-wide="1"] .moodcard{width:206px;height:150px}
+html[data-shell][data-wide="1"] .acard img{width:116px;height:116px}
+/* 全屏播放器：竖屏封面按高度收敛，不再顶到两侧 */
+html[data-shell][data-wide="1"] .player .pcover img{width:min(50vh,360px)}
+/* 启动页图形标放大，别在 10 寸屏上显小 */
+html[data-shell][data-wide="1"] .splash .mark{height:150px;width:150px}
+/* 区块标题略放大（纯字号，不动任何尺寸规则） */
+html[data-shell][data-wide="1"] .sec-hd h2{font-size:22px}
+/* iPad 横屏（810 高亦 >=700 → 同样命中）：横向更宽，内容列放宽、海报相应限高 */
+@media (orientation:landscape){
+  html[data-shell][data-wide="1"]{--con-w:min(1000px,100vw)}
+  html[data-shell][data-wide="1"] .hero{height:min(64vh,430px)}
+}
 </style>
+<script>
+/* 大屏标记（只判 iPad）：屏两轴均 >=700pt 才算大屏 —— iPad 竖 810x1080 / 横 1080x810 命中，
+   iPhone 竖 393x852、横 852x393 均不命中。故所有大屏样式都不会碰手机。 */
+(function(){var d=document.documentElement;
+function w(){var v=(window.innerWidth>=700&&window.innerHeight>=700)?"1":"0";if(d.getAttribute("data-wide")!==v)d.setAttribute("data-wide",v);}
+w();window.addEventListener("resize",w);window.addEventListener("orientationchange",w);})();
+</script>
 </head>
 <body data-page-node-id="L89VlaH9avRrjb6Ive7B22">
 <div class="stage" data-page-node-id="64aZ8UT71CkLwmfTl31EEO">
