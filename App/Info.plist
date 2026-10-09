@@ -41,6 +41,14 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- ★ 2026-10-09 iPad 支持：TARGETED_DEVICE_FAMILY 放开 "1,2" 后，iPad 需独立的方向声明，
+	     否则 iPad 上方向能力未定义。与 iPhone 一致（竖屏 + 左右横屏；不加倒竖屏 —— 内核未做该方向适配）。 -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>UIStatusBarStyle</key>

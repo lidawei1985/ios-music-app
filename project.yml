@@ -28,7 +28,12 @@ targets:
         PRODUCT_NAME: 大伟歌
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
-        TARGETED_DEVICE_FAMILY: "1"
+        # ★ 2026-10-09 放开 iPad：原 "1"（仅 iPhone）会让 iPad 以「iPhone 兼容模式」运行
+        #   —— 全屏只有一个 iPhone 尺寸的小窗、四周黑边（实测反馈「iPad 打开还是手机大小」）。
+        #   改 "1,2"（iPhone + iPad 通用）后 iPad 原生全屏运行，内核 100vw/100vh 即铺满整屏；
+        #   配套：Info.plist 增 UISupportedInterfaceOrientations~ipad，
+        #   内核 app.html 增 html[data-wide] 大屏断点（两轴 ≥700pt 才触发，手机端零影响）。
+        TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: App/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
