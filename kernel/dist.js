@@ -1549,8 +1549,8 @@ const KUP = {
   fallbackBase: CDN_NODES[1] + CDN_REPO + "ios-music-app@main/kernel/",
   KEY:"dwg.kup.last",          // 上次检查时间，避免每次启动都查
   everyMs: 6*3600*1000,        // 6 小时最多查一次（不打扰、省流量）
-  check(force){
-    if(PLAT==="web" || !Native.ok) return;      // 只有原生壳才支持（网页无写盘能力）
+  check(force, done){
+    if(PLAT==="web" || !Native.ok){ if(done) done({ok:false,msg:"当前环境不支持热更新"}); return; }
     try{
       const last=+(localStorage.getItem(this.KEY)||0);
       if(!force && Date.now()-last < this.everyMs) return;
@@ -1563,7 +1563,7 @@ const KUP = {
            锚点文件 URL 天生是新的 → 秒级；拿到 sha 后把 base 换成 @<sha>/kernel/，
            同样是全新 URL → 原生 kcheck 立刻就能比出版本差、下到新内核。
            探不到（无网/窗口文件缺失）→ 原样用 @main，只是慢，**永不断供**。 */
-      probeTideIos(5000, 14000).then(sha=>{
+      probeTideIos(5000, 14000).catch(()=>{ if(done) done({ok:false,msg:"检查失败（网络不通）"}); return null; }).then(sha=>{
         const bases = [];
         // 锚点 sha 的 base：每一档节点各来一个（节点级冗余，不押注单一节点）
         if(sha) CDN_NODES.forEach(n=>bases.push(n + CDN_REPO + "ios-music-app@" + sha + "/kernel/"));
@@ -1573,19 +1573,22 @@ const KUP = {
         return bases.reduce((p,b)=>p.then(r=>(r && r.ok && r.updated) ? r : pull(b)),
                             Promise.resolve(null));
       }).then(r=>{
-        try{ localStorage.setItem(this.KEY, String(Date.now())); }catch(e){}
+        /* 只在“真的问到了 CDN”才记时间戳：通网顺畅时 6 小时一次，
+           但断网/节点全挂时不记账 —— 下次启动立刻重试，而不是静默 6 小时。 */
+        if(r && r.ok){ try{ localStorage.setItem(this.KEY, String(Date.now())); }catch(e){} }
         if(r && r.ok && r.updated){
           // 已落盘，下次启动生效。此处只留一条控制台痕迹，不做任何 UI 打扰。
           console.log("[DWG] 内核已更新到 "+r.version+"（"+Math.round((r.bytes||0)/1048576*10)/10+"MB），下次启动生效");
         }
-      }).catch(()=>{});
+        if(done) done(r||{ok:false,msg:"没有可用的更新源"});
+      }).catch(()=>{ if(done) done({ok:false,msg:"检查失败"}); });
       /* 判据说明（沿用旧逻辑的结论，仍适用）：
          回落判据必须是 r.updated，**不能**是 r.ok —— 节点之间回源时间不同步
          （A 节点可能还在发旧清单），此时原生比对 version 与本地相同 →
          返回 ok=true / updated=false。若只看 r.ok 就停，会把「节点发旧清单」
          误判成「已是最新」而放弃换源，等于白白错过本来能拿到的内核。
          成本只是多拉一次 192 字节的 kernel.json，版本相同就不会下 6MB 内核，可忽略。 */
-    }, 8000);
+    }, force?300:8000);
   }
 };
 
@@ -3086,12 +3089,41 @@ function buildSettings(){
         <div class="gi"><span class="lab">当前版本</span><span class="val">${platName()} · 1.0 (1)</span></div>
         <div class="gi"><span class="lab">曲库规模</span><span class="val">${(typeof CATALOG!=="undefined"&&CATALOG.ready)?CATALOG.fmt():""} 首</span></div>
       </div>
+
+      <div class="sec"><h2 style="font-size:17px;margin:0 0 10px">自动更新</h2></div>
+      <div class="group">
+        <div class="gi"><span class="ico">${ICONS.settings}</span><span class="lab">当前内核</span>
+          <span class="val" id="kupVerV">查询中…</span></div>
+        <div class="gi" id="kupChk"><span class="ico">${ICONS.dl}</span><span class="lab">检查更新</span>
+          <span class="val" id="kupChkV">点这里立即检查</span><span class="chev">${ICONS.chev}</span></div>
+        <div class="gi"><span class="ico">${ICONS.disc}</span><span class="lab">曲库/榜单/MV</span>
+          <span class="val">联网实时同步</span></div>
+        <div class="gi"><span class="lab">上次检查</span><span class="val" id="kupLastV">—</span></div>
+      </div>
       <div class="foot" style="display:flex;flex-direction:column;align-items:center;gap:10px">
         <span>大伟歌 · 只收录真正能听的歌</span>
       </div>
     </div>`,
     onMount(node){
       node.querySelectorAll("[data-quality]").forEach(x=>x.onclick=()=>qualitySheet());
+      /* ---- 自动更新：让「设备到底跟没跟上」可见、可手动触发 ---- */
+      const paintVer=()=>{ const t=node.querySelector("#kupVerV"); if(!t) return;
+        if(!Native.ok){ t.textContent="网页版（无热更）"; return; }
+        Native.call("kinfo",{},5000).then(r=>{ if(!node.isConnected) return;
+          t.textContent = r ? ((r.version? "v"+String(r.version).slice(0,12)+" · " : "")+(r.status||"")) : "原生未响应";
+        }); };
+      const paintLast=()=>{ const t=node.querySelector("#kupLastV"); if(!t) return;
+        let ms=0; try{ ms=+(localStorage.getItem(KUP.KEY)||0); }catch(e){}
+        if(!ms){ t.textContent="尚未检查"; return; }
+        const m=Math.max(0,Math.round((Date.now()-ms)/60000));
+        t.textContent = m<1 ? "刚刚" : (m<60 ? m+" 分钟前" : Math.round(m/60)+" 小时前"); };
+      paintVer(); paintLast();
+      const chk=node.querySelector("#kupChk");
+      if(chk) chk.onclick=()=>{ const v=node.querySelector("#kupChkV");
+        if(v) v.textContent="检查中…";
+        KUP.check(true,(r)=>{ if(!node.isConnected) return;
+          if(v) v.textContent = !r ? "检查失败" : (r.updated ? ("已更新 "+String(r.version||"").slice(0,12)+" · 重启生效") : (r.ok ? "已是最新" : (r.msg||"检查失败")));
+          paintVer(); paintLast(); }); };
       bindCommon(node);
     }
   };
