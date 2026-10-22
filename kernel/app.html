@@ -369,6 +369,10 @@ body{
 .qchip:active{transform:scale(.95);background:rgba(255,255,255,.22)}
 .qchip.hi{color:var(--orange);border-color:rgba(255,159,10,.5);background:rgba(255,159,10,.16)}
 .qchip .qarr{opacity:.65;font-size:12px}
+/* 播放器能力条：音质 / 倍速 / 定时 三个胶囊并排，窄屏自动换行 */
+.pchips{margin-top:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.pchips .qchip{margin-top:0}
+.qchip.on{border-color:rgba(255,255,255,.75);background:rgba(255,255,255,.26)}
 .pseek{padding:20px 26px 0}
 .pseek .track{height:6px;border-radius:3px;background:rgba(255,255,255,.16);position:relative;cursor:pointer}
 .pseek .track .buf{position:absolute;inset:0;width:100%;border-radius:3px;background:rgba(255,255,255,.1)}
@@ -469,6 +473,27 @@ body{
 .sitem .sub{margin-left:auto;font-size:13px;color:var(--txt2);flex:none;max-width:62%;text-align:right;line-height:1.45}
 .sitem.danger{color:#ff453a}
 .sitem.danger .ico{color:#ff453a}
+/* 输入面板（新建歌单等）：WebView 里 window.prompt 会被壳吞掉，只能自绘 */
+.ifs{padding:4px 14px 18px}
+.tfield{width:100%;height:48px;border-radius:12px;border:.5px solid var(--line2);
+  background:var(--glass2);color:var(--txt);font-size:16px;padding:0 14px;font-family:inherit;
+  outline:none;-webkit-appearance:none;box-sizing:border-box}
+.tfield::placeholder{color:var(--txt3)}
+.tfield:focus{border-color:var(--accent);background:var(--glass3)}
+.ifb{display:flex;gap:10px;margin-top:14px}
+.ifb .btn{flex:1;justify-content:center}
+/* 每日推荐卡（首页） */
+.daily{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:18px;cursor:pointer;
+  background:linear-gradient(120deg,rgba(255,255,255,.14),rgba(255,255,255,.05));
+  border:.5px solid var(--line2);box-shadow:var(--sheen)}
+.daily:active{transform:scale(.985)}
+.daily .d-ic{width:46px;height:46px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;
+  background:var(--accent-soft);color:var(--accent)}
+.daily .d-tx{flex:1;min-width:0}
+.daily .d-tx .t{font-size:16.5px;font-weight:800;letter-spacing:-.3px}
+.daily .d-tx .s{font-size:12.5px;color:var(--txt2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.daily .d-play{width:42px;height:42px;flex:none;border-radius:50%;border:0;cursor:pointer;
+  background:#fff;color:#000;display:flex;align-items:center;justify-content:center}
 .divh{height:.5px;background:var(--line);margin:6px 12px}
 
 /* ============ 搜索 ============ */
@@ -803,7 +828,11 @@ w();window.addEventListener("resize",w);window.addEventListener("orientationchan
     <div class="pinfo" id="plInfo" role="button" tabindex="0" aria-label="点信息看歌词" data-page-node-id="mA5KHoDszVFzTcFJgCTPQP">
       <div class="t" id="plT" data-page-node-id="e477p24yIouE8t1DRmmOuT">—</div>
       <div class="s" id="plS" data-page-node-id="nSOp8nuhGgnlADqdO3TDji">—</div>
-      <button class="qchip" id="plQual" aria-label="音质" data-page-node-id="Wz7pquZpVOgI1h32C111fG">音质</button>
+      <div class="pchips">
+        <button class="qchip" id="plQual" aria-label="音质" data-page-node-id="Wz7pquZpVOgI1h32C111fG">音质</button>
+        <button class="qchip" id="plRate" aria-label="播放速度">1.0×</button>
+        <button class="qchip" id="plSleep" aria-label="定时关闭">定时</button>
+      </div>
     </div>
     <div class="pseek" data-page-node-id="bS34HTXurAh8TCeAQf5PE4">
       <div class="track" id="plTrack" data-page-node-id="Y07R1Ka9oDFe6HWPApEN9f"><div class="buf" data-page-node-id="t7opHVQOL6DGW2ox29MC31"></div><div class="fg" id="plFg" data-page-node-id="vIYAWvtaXX8nLzCuc9fnEA"></div><div class="knob" id="plKnob" data-page-node-id="847HD1L9w5kIHfw6PHPdNp"></div></div>
@@ -1869,7 +1898,88 @@ const Store = {
   clear(kind){ this.d[kind]=[]; this.save(); }
 };
 Store.load();
+
+/* =====================================================================
+   自建歌单（对标 QQ音乐/网易云的「我的歌单」）
+   —— 存在本机 localStorage，免登录、断网也在；键独立于 Store，互不污染。
+   ===================================================================== */
+const PL = (function(){
+  const K="dwg.pl.v1";
+  let list=[];
+  function load(){
+    try{ const x=JSON.parse(localStorage.getItem(K)||"[]"); list=Array.isArray(x)?x:[]; }catch(e){ list=[]; }
+    list=list.filter(p=>p&&p.id&&p.name&&Array.isArray(p.songs));
+    return list;
+  }
+  function save(){ try{ localStorage.setItem(K, JSON.stringify(list)); }catch(e){} }
+  load();
+  return {
+    all(){ return list; },
+    count(){ return list.length; },
+    get(id){ return list.find(p=>p.id===id)||null; },
+    create(name){
+      name=String(name||"").replace(/\s+/g," ").trim().slice(0,30);
+      if(!name) return null;
+      if(list.some(p=>p.name===name)) return null;
+      const p={id:"pl"+Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+               name:name, at:Date.now(), songs:[]};
+      list.unshift(p); save(); return p;
+    },
+    del(id){ list=list.filter(p=>p.id!==id); save(); },
+    /* 收录：按 skey 去重（同曲不同源算同一首） */
+    has(id, s){ const p=this.get(id); return !!(p && p.songs.some(x=>x.k===skey(s.t,s.s))); },
+    add(id, s){
+      const p=this.get(id); if(!p) return false;
+      const k=skey(s.t,s.s);
+      if(p.songs.some(x=>x.k===k)) return false;
+      p.songs.unshift(Store.pack(s)); save(); return true;
+    },
+    remove(id, k){ const p=this.get(id); if(!p) return; p.songs=p.songs.filter(x=>x.k!==k); save(); },
+    songs(id){ const p=this.get(id); return p?p.songs.map(x=>Store.revive(x)):[]; }
+  };
+})();
+
 const fmt = t=>{t=Math.max(0,Math.floor(t||0));return Math.floor(t/60)+":"+String(t%60).padStart(2,"0");};
+/* =====================================================================
+   每日推荐（对标 QQ音乐「每日 30 首」/ 网易云「每日推荐」）
+   —— 真效果：按本机收藏+最近播放的歌手做口味加权，日期做随机种子，
+      同一天反复进来**同一批歌**（不乱跳），第二天自动换一批。
+      取的都是曲库里能真播的原唱（翻唱/伴奏不进推荐）。
+   ===================================================================== */
+const Daily = (function(){
+  const K="dwg.daily.v1";
+  function day(){ const d=new Date(); const p=n=>String(n).padStart(2,"0");
+    return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate()); }
+  function hash(s){ let h=2166136261; for(const c of String(s)){ h^=c.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
+  function rng(a){ return function(){ a=(a+0x6D2B79F5)|0;
+    let t=Math.imul(a^(a>>>15), 1|a); t=(t+Math.imul(t^(t>>>7), 61|t))^t;
+    return ((t^(t>>>14))>>>0)/4294967296; }; }
+  function list(){
+    const today=day();
+    let st=null;
+    try{ st=JSON.parse(localStorage.getItem(K)||"null"); }catch(e){}
+    if(st && st.day===today && Array.isArray(st.songs) && st.songs.length){
+      return st.songs.map(x=>Store.revive(x)).filter(s=>s&&s.t);
+    }
+    const like={};
+    (Store.d.fav||[]).forEach(x=>{ if(x.s) like[x.s]=(like[x.s]||0)+3; });
+    (Store.d.recent||[]).forEach(x=>{ if(x.s) like[x.s]=(like[x.s]||0)+1; });
+    const pool=(DB.songs||[]).filter(s=>s&&s.t&&s.s
+      && !isCv(s.t,s.s,s.a,s.cv) && !isInst(s.t,s.s,s.a));
+    const r=rng(hash(today));
+    const scored=pool.map(s=>({s:s, w:(like[s.s]||0)*2.2 + r()*10}));
+    scored.sort((a,b)=>b.w-a.w);
+    const out=[], byS={};
+    for(const it of scored){
+      if(out.length>=40) break;
+      const c=byS[it.s.s]||0; if(c>=3) continue;   // 同一歌手最多 3 首，别整成「单曲循环」
+      byS[it.s.s]=c+1; out.push(it.s);
+    }
+    try{ localStorage.setItem(K, JSON.stringify({day:today, songs:out.map(s=>Store.pack(s))})); }catch(e){}
+    return out;
+  }
+  return { list:list, day:day, count(){ return this.list().length; } };
+})();
 /* 数据新鲜度展示：ISO → "10-22 22:36"（榜单页/曲库页用它自证「不是假数据」） */
 const fmtUpd = s=>{
   if(!s) return "—";
@@ -2193,6 +2303,126 @@ const MI = {
 /* 音量交给系统：app 内不设任何音量乘数、不改播放速率，
    这样手机实体音量键调的就是真实出声大小（应用内音量条会和实体键打架，已下线）。 */
 
+/* =====================================================================
+   播放增强：倍速 / 睡眠定时（对标 QQ音乐·网易云的「倍速」「定时关闭」）
+   —— 纯 audio 元素能力，不依赖原生桥，Android/iOS/桌面浏览器同一套行为。
+   ===================================================================== */
+const ICO_CLOCK='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.6V12l3.2 1.9"/></svg>';
+const ICO_SPEED='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17a8.6 8.6 0 1 1 16 0"/><path d="M12 13.6l4.2-4.6"/><circle cx="12" cy="17" r="1.5" fill="currentColor" stroke="none"/></svg>';
+
+const Rate = (function(){
+  const K="dwg.rate.v1", OPTS=[0.5,0.75,1,1.25,1.5,1.75,2];
+  let v=1;
+  try{ const x=parseFloat(localStorage.getItem(K)); if(x>=0.25&&x<=3) v=x; }catch(e){}
+  function label(x){ return (x===1?"1.0":String(x))+"×"; }
+  function apply(){
+    const a=document.getElementById("au");
+    if(a){
+      try{
+        a.playbackRate=v;
+        // 变速不变调：三大前缀都写一遍，老 WebView 也认
+        a.preservesPitch=true; a.webkitPreservesPitch=true; a.mozPreservesPitch=true;
+      }catch(e){}
+    }
+    const b=document.getElementById("plRate");
+    if(b){ b.textContent=label(v); b.classList.toggle("hi", v!==1); }
+    const sb=document.getElementById("setRate");
+    if(sb) sb.textContent=label(v);
+  }
+  return {
+    v:()=>v, label:label, opts:()=>OPTS.slice(),
+    set(x){
+      v=Math.max(0.25, Math.min(3, +x||1));
+      try{ localStorage.setItem(K, String(v)); }catch(e){}
+      apply();
+      toast(v===1?"已恢复原速":"播放速度 "+label(v));
+    },
+    apply
+  };
+})();
+
+const Sleep = (function(){
+  let endAt=0, tEnd=null, tTick=null, afterCur=false;
+  function paint(){
+    const b=document.getElementById("plSleep"); if(!b) return;
+    if(!endAt){ b.textContent="定时"; b.classList.remove("on","hi"); return; }
+    const left=Math.max(0, endAt-Date.now());
+    b.textContent="定时 "+fmt(Math.ceil(left/1000));
+    b.classList.add("on");
+  }
+  function clear(silent){
+    if(tEnd){ clearTimeout(tEnd); tEnd=null; }
+    if(tTick){ clearInterval(tTick); tTick=null; }
+    endAt=0; afterCur=false; paint();
+    if(!silent) toast("已关闭定时");
+  }
+  function fadeStop(){
+    const a=document.getElementById("au");
+    if(!a){ clear(true); return; }
+    let vol=1;
+    const iv=setInterval(()=>{
+      vol-=0.09;
+      if(vol<=0.02){
+        clearInterval(iv);
+        try{ a.pause(); }catch(e){}
+        try{ a.volume=1; }catch(e){}
+        clear(true);
+        toast("定时结束，已暂停播放");
+        P.paint();
+        return;
+      }
+      try{ a.volume=Math.max(0.02,vol); }catch(e){}
+    }, 380);
+  }
+  function arm(min){
+    clear(true);
+    if(!min) return;
+    endAt=Date.now()+min*60000;
+    tEnd=setTimeout(fadeStop, min*60000);
+    tTick=setInterval(paint, 1000);
+    paint();
+    toast("已设置 "+min+" 分钟后停止");
+  }
+  return {
+    set:arm,
+    clear:()=>clear(false),
+    active:()=>!!(endAt||afterCur),
+    left:()=>endAt?Math.max(0,endAt-Date.now()):0,
+    after(){ clear(true); afterCur=true; paint(); toast("播完当前这首就停"); },
+    afterOn:()=>afterCur,
+    /* 被 <audio> 的 ended 调用：返回 true 表示已接管（不要自动下一首） */
+    consumeAfter(){
+      if(!afterCur) return false;
+      afterCur=false; paint();
+      try{ P.au().pause(); }catch(e){}
+      toast("定时结束，已停在当前曲");
+      return true;
+    },
+    fadeStop
+  };
+})();
+
+/* 倍速选择面板 */
+function rateSheet(){
+  openSheet("播放速度", "变速不变调 · 设置会被记住", Rate.opts().map(r=>({
+    i:ICO_SPEED, l:r===1?"1.0× （正常）":r+"×", on:Rate.v()===r,
+    fn:()=>Rate.set(r)
+  })).concat([null, {i:ICONS.x, l:"恢复默认", fn:()=>Rate.set(1)}]));
+}
+/* 定时关闭面板 */
+function sleepSheet(){
+  const items=[
+    {i:ICO_CLOCK, l:"15 分钟后", fn:()=>Sleep.set(15)},
+    {i:ICO_CLOCK, l:"30 分钟后", fn:()=>Sleep.set(30)},
+    {i:ICO_CLOCK, l:"60 分钟后", fn:()=>Sleep.set(60)},
+    {i:ICO_CLOCK, l:"90 分钟后", fn:()=>Sleep.set(90)},
+    null,
+    {i:ICONS.pause, l:"播完当前这首就停", on:Sleep.afterOn(), fn:()=>Sleep.after()}
+  ];
+  if(Sleep.active()) items.push(null, {i:ICONS.x, l:"关闭定时", danger:true, fn:()=>Sleep.clear()});
+  openSheet("定时关闭", Sleep.active()?("剩余 "+fmt(Math.ceil(Sleep.left()/1000))):"到点自动淡出暂停", items);
+}
+
 const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list", errs:0,
   _tok:0, qLabel:"",
   au(){ return document.getElementById("au"); },
@@ -2240,7 +2470,8 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     if(token!==this._tok) return;
     this.qLabel=label;
     this.playing=true;
-    try{ a.volume=1; a.playbackRate=1; a.src=u; }catch(e){}
+    try{ a.volume=1; a.src=u; }catch(e){}
+    Rate.apply();                                       // 换曲后重新落倍速（部分内核会重置）
     const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>{});
     this.paint();
     this.warmNext();
@@ -2270,6 +2501,22 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     toast("这条线路不通，已切到"+label);
     this.paint();
     return true;
+  },
+  /* 插播「下一首」：真把这首塞到当前曲后面（不是只弹个 toast 骗人）。
+     队列本来就按 skey 去重过，所以这里只需「若在后面则提上来」。 */
+  nextUp(s){
+    if(!s) return;
+    const q=this.queue, cur=q[this.i];
+    if(!cur){ this.load([s],0,"手动添加"); toast("已开始播放："+s.t); return; }
+    const k=skey(s.t,s.s);
+    if(k===skey(cur.t,cur.s)){ toast("这首正在播放"); return; }
+    if(q[this.i+1] && skey(q[this.i+1].t,q[this.i+1].s)===k){ toast("已经是下一首了"); return; }
+    const at=q.findIndex((x,idx)=>idx>this.i && skey(x.t,x.s)===k);
+    if(at>this.i) q.splice(at,1);                 // 已在队列后面 → 抽出来提前
+    q.splice(this.i+1,0,s);
+    toast("已加入下一首："+s.t);
+    const ns=document.getElementById("nextUpT");
+    if(ns) ns.textContent=s.t;
   },
   next(d){
     const q=this.queue; if(!q.length) return;
@@ -2371,7 +2618,7 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   a.addEventListener("loadedmetadata",()=>{ if(a.duration&&isFinite(a.duration)) P.tot=a.duration; P.paint(); });
   a.addEventListener("play",()=>{ P.playing=true; P.paint(); MS.playback("playing"); });
   a.addEventListener("pause",()=>{ P.playing=false; P.paint(); MS.playback("paused"); });
-  a.addEventListener("ended",()=>{ if(P.mode==="one"){ try{ a.currentTime=0; a.play(); }catch(e){} return; } P.next(1); });
+  a.addEventListener("ended",()=>{ if(Sleep.consumeAfter()) return; if(P.mode==="one"){ try{ a.currentTime=0; a.play(); }catch(e){} return; } P.next(1); });
   /* ★ 2026-10-22：出错先换源，不是直接跳歌。
      旧逻辑一响 error 就 toast「已跳过」→ 用户眼看着歌被跳掉，其实换个线路就能放。
      现在 streamCands() 给出了本曲的全部线路，挨个试完才认输。 */
@@ -2898,6 +3145,15 @@ function buildHome(){
 
       <div class="hero" aria-label="主视觉海报"></div>
       <div class="hero-info" id="heroInfo" aria-label="当前主视觉歌曲"></div>
+
+      <div class="sec">
+        <div class="daily" data-daily="1">
+          <div class="d-ic">${ICONS.disc}</div>
+          <div class="d-tx"><div class="t">每日推荐</div>
+            <div class="s">${Daily.count()} 首 · 按你的口味，每天 0 点更新</div></div>
+          <button class="d-play" aria-label="播放每日推荐">${ICONS.play.replace('width="20" height="20"','width="22" height="22"')}</button>
+        </div>
+      </div>
 
       <div class="home-duo">
         <div class="duo-col">
@@ -3471,16 +3727,18 @@ function buildMine(){
         <div class="glassbox me-stat" data-mine="recent">
           <div class="n">${recent}</div><div class="l">最近播放</div></div>
         <div class="glassbox me-stat" data-mine="dl">
-          <div class="n">${dl}</div><div class="l">已下载</div></div>
+          <div class="n">${dl}</div><div class="l">下载列表</div></div>
       </div>
 
       <div class="sec"><div class="sec-hd"><h2 style="font-size:17px">我的音乐</h2></div></div>
       <div class="group">
         <div class="gi" data-mine="fav"><span class="ico">${ICONS.heart}</span><span class="lab">我喜欢的音乐</span>
           <span class="val">${fav} 首</span><span class="chev">${ICONS.chev}</span></div>
+        <div class="gi" data-go="playlists"><span class="ico">${ICONS.list}</span><span class="lab">我的歌单</span>
+          <span class="val">${PL.count()} 个</span><span class="chev">${ICONS.chev}</span></div>
         <div class="gi" data-mine="recent"><span class="ico">${ICONS.clock}</span><span class="lab">最近播放</span>
           <span class="val">${recent} 首</span><span class="chev">${ICONS.chev}</span></div>
-        <div class="gi" data-mine="dl"><span class="ico">${ICONS.dl}</span><span class="lab">我的下载</span>
+        <div class="gi" data-mine="dl"><span class="ico">${ICONS.dl}</span><span class="lab">下载列表</span>
           <span class="val">${dl} 首</span><span class="chev">${ICONS.chev}</span></div>
       </div>
 
@@ -3524,7 +3782,7 @@ function openMineList(kind){
   const meta={
     fav:{t:"我喜欢的音乐",em:"♡",e:"还没有收藏。播放器里点「收藏」就会出现在这里。"},
     recent:{t:"最近播放",em:"♪",e:"还没有播放记录。随便点一首歌就开始积累。"},
-    dl:{t:"我的下载",em:"↓",e:"还没有下载。播放器里点「下载」即可加入。"}
+    dl:{t:"下载列表",em:"↓",e:"还没有记录。播放器里点「下载」把歌记进来（本版本播放仍需联网）。"}
   }[kind];
   const list=Store.songs(kind);
   const right = list.length
@@ -3557,6 +3815,105 @@ function openMineList(kind){
   });
 }
 
+/* ---- 每日推荐 ---- */
+function buildDaily(){
+  const list=Daily.list();
+  return {
+    html:`${navBar("每日推荐",`<button class="ibtn" data-dredo aria-label="换一批">${ICONS.disc}</button>`)}
+    <div class="sec" style="padding:0 18px 4px">
+      <div style="font-size:12.5px;color:var(--txt2);line-height:1.6">
+        ${Daily.day()} · ${list.length} 首 · 按你的收藏与最近播放排的，同一天进来不会变
+      </div>
+    </div>
+    ${list.length?`<div style="padding:8px 0 6px">${playAllBtn(list,"每日推荐")}</div>`:""}
+    <div class="scroll${list.length?" tabbed":""}" style="padding-top:2px">
+      <div class="group" id="dly"></div>
+      <div class="foot">${list.length?"在「我的」里收藏/多听几首，明天的推荐会更准":""}</div>
+    </div>`,
+    onMount(node){
+      const box=node.querySelector("#dly");
+      if(!list.length) box.innerHTML=`<div class="empty"><div class="em">♪</div><p>曲库还没载入完，稍等一下再进来。</p></div>`;
+      list.forEach((s,i)=>box.appendChild(songRow(s,i,list,"每日推荐")));
+      const pa=node.querySelector("#playAll"); if(pa) pa.onclick=()=>{P.load(list,0,"每日推荐");openPlayer();};
+      const rd=node.querySelector("[data-dredo]");
+      if(rd) rd.onclick=()=>{ openSheet("换一批","重排今日推荐（今天之后不再变化）",[
+        {i:ICONS.disc,l:"重新排一次",fn:()=>{
+          try{ localStorage.removeItem("dwg.daily.v1"); }catch(e){}
+          back(); setTimeout(()=>pushPage("daily",buildDaily()),200);
+          toast("已重排今日推荐");
+        }},
+        null,{i:ICONS.x,l:"取消",fn:()=>{}}
+      ]); };
+      bindCommon(node);
+    }
+  };
+}
+
+/* ---- 我的歌单 ---- */
+function buildPlaylists(){
+  return {
+    html:`${navBar("我的歌单",`<button class="ibtn" data-newpl aria-label="新建歌单">${ICONS.plus}</button>`)}
+    <div class="scroll" style="padding-top:8px">
+      <div class="group" id="pll"></div>
+      <div class="foot" id="plFoot"></div>
+    </div>`,
+    onMount(node){
+      const box=node.querySelector("#pll"), foot=node.querySelector("#plFoot");
+      function render(){
+        const list=PL.all();
+        box.innerHTML="";
+        if(!list.length){
+          box.innerHTML=`<div class="empty"><div class="em">♪</div><p>还没有歌单。点右上角「＋」新建一个，<br>或在任意歌曲的「更多」里选「加入歌单」。</p></div>`;
+        }
+        list.forEach(p=>{
+          const it=el("div","gi");
+          it.innerHTML=`<span class="ico">${ICONS.list}</span>
+            <span class="lab">${esc(p.name)}</span>
+            <span class="val">${p.songs.length} 首</span><span class="chev">${ICONS.chev}</span>`;
+          it.onclick=()=>pushPage("pl-"+p.id, buildPlaylistPage(p.id));
+          box.appendChild(it);
+        });
+        foot.textContent=list.length?("共 "+list.length+" 个歌单 · 存在本机，免登录也能看"):"";
+      }
+      render();
+      node.querySelector("[data-newpl]").onclick=()=>newPlaylist(null, render);
+      bindCommon(node);
+    }
+  };
+}
+function buildPlaylistPage(id){
+  const p=PL.get(id);
+  const nb=(t,right)=>navBar(t,right);
+  if(!p){
+    return { html:nb("歌单")+`<div class="empty"><div class="em">♪</div><p>这个歌单已经被删掉了。</p></div>`,
+             onMount(n){ bindCommon(n); } };
+  }
+  const list=PL.songs(id);
+  const many=`<button class="ibtn" data-pldel aria-label="删除歌单">${ICONS.trash}</button>`;
+  return {
+    html:`${nb(p.name, many)}
+    ${list.length?`<div style="padding:12px 0 6px">${playAllBtn(list,p.name)}</div>`:""}
+    <div class="scroll${list.length?" tabbed":""}" style="padding-top:4px">
+      <div class="group" id="pls"></div>
+      <div class="foot">${list.length?("共 "+list.length+" 首 · 想移出就点行尾「⋯」"):""}</div>
+    </div>`,
+    onMount(node){
+      const box=node.querySelector("#pls");
+      if(!list.length){
+        box.innerHTML=`<div class="empty"><div class="em">♪</div><p>歌单还是空的。<br>在任意歌曲「更多」里选「加入歌单」就能收进来。</p></div>`;
+      }
+      list.forEach((s,i)=>box.appendChild(songRow(s,i,list,p.name)));
+      const pa=node.querySelector("#playAll"); if(pa) pa.onclick=()=>{P.load(list,0,p.name);openPlayer();};
+      const d=node.querySelector("[data-pldel]");
+      if(d) d.onclick=()=>openSheet("删除歌单","「"+p.name+"」共 "+list.length+" 首，删除后不可恢复",[
+        {i:ICONS.trash,l:"确认删除这个歌单",danger:true,fn:()=>{PL.del(id);back();toast("已删除「"+p.name+"」");}},
+        null,{i:ICONS.x,l:"取消",fn:()=>{}}
+      ]);
+      bindCommon(node);
+    }
+  };
+}
+
 /* ---- 设置 ---- */
 function buildSettings(){
   return {
@@ -3566,6 +3923,10 @@ function buildSettings(){
       <div class="group">
         <div class="gi" data-quality><span class="ico">${ICONS.hifi}</span><span class="lab">音质</span>
           <span class="val" id="setQual">${Qual.name()}</span><span class="chev">${ICONS.chev}</span></div>
+        <div class="gi" data-rate><span class="ico">${ICO_SPEED}</span><span class="lab">播放速度</span>
+          <span class="val" id="setRate">${Rate.label(Rate.v())}</span><span class="chev">${ICONS.chev}</span></div>
+        <div class="gi" data-sleep><span class="ico">${ICO_CLOCK}</span><span class="lab">定时关闭</span>
+          <span class="val" id="setSleep">${Sleep.active()?"进行中":"未开启"}</span><span class="chev">${ICONS.chev}</span></div>
       </div>
 
       <div class="sec"><h2 style="font-size:17px;margin:0 0 10px">关于</h2></div>
@@ -3590,6 +3951,8 @@ function buildSettings(){
     </div>`,
     onMount(node){
       node.querySelectorAll("[data-quality]").forEach(x=>x.onclick=()=>qualitySheet());
+      node.querySelectorAll("[data-rate]").forEach(x=>x.onclick=()=>rateSheet());
+      node.querySelectorAll("[data-sleep]").forEach(x=>x.onclick=()=>sleepSheet());
       /* ---- 自动更新：让「设备到底跟没跟上」可见、可手动触发 ---- */
       const paintVer=()=>{ const t=node.querySelector("#kupVerV"); if(!t) return;
         if(!Native.ok){ t.textContent="网页版（无热更）"; return; }
@@ -3625,6 +3988,7 @@ function bindCommon(scope){
     else if(g==="charts"||g==="chartsAll") gotoTab("charts");
     else if(g==="mv") pushPage("mv",buildMV());
     else if(g==="library") pushPage("library",buildLibrary());
+    else if(g==="playlists") pushPage("playlists",buildPlaylists());
     else if(g==="settings") pushPage("settings",buildSettings());
   });
   scope.querySelectorAll("[data-mine]").forEach(b=>b.onclick=()=>openMineList(b.dataset.mine));
@@ -3646,6 +4010,16 @@ function bindCommon(scope){
     P.load(list,0,m.k); openPlayer();
   });
   scope.querySelectorAll("[data-artists]").forEach(b=>b.onclick=()=>pushPage("artists",buildArtists()));
+  scope.querySelectorAll("[data-daily]").forEach(b=>{
+    const go=e=>{
+      const list=Daily.list();
+      if(!list.length){ toast("曲库还没载入完，稍等一下"); return; }
+      // 点右侧圆形播放键 = 直接起播；点卡片其他位置 = 看列表
+      if(e && e.target.closest(".d-play")){ P.load(list,0,"每日推荐"); openPlayer(); return; }
+      pushPage("daily",buildDaily());
+    };
+    b.onclick=go;
+  });
 }
 
 /* 全部歌手页（首页「歌手 · 全部」入口） */
@@ -3706,6 +4080,7 @@ function openCat(group,name){
    ===================================================================== */
 function openPlayer(){
   $("#player").dataset.in="1"; $("#tabbar").classList.add("hide"); $("#mini").classList.add("hide"); P.paint();
+  Rate.apply();                        // 胶囊显示当前倍速（换设备/重开也一致）
   // 关键：播放器是"打开的层"，必须进可返回栈，否则返回/ESC 会穿透到下面页面
   if(!Nav.overlays.some(o=>o.id==="player")) Nav.overlays.push({id:"player", close:()=>closePlayer()});
 }
@@ -3899,6 +4274,54 @@ function openSheet(title,sub,items,onClosed){
   $("#scrim").dataset.in="1"; s.dataset.in="1";
   Nav.overlays.push({id:"sheet", close:()=>closeSheet(onClosed)});
 }
+/* 文本输入面板：WebView 里 window.prompt 会被壳静默吞掉（Android 未实现 onJsPrompt → 永远返回 null），
+   所以新建歌单这类命名动作必须走自家输入框。 */
+function inputSheet(title, sub, ph, onOk, defVal){
+  const s=$("#sheet"), b=$("#sheetB");
+  $("#sheetT").textContent=title||"";
+  $("#sheetS").textContent=sub||""; $("#sheetS").style.display=sub?"":"none";
+  b.innerHTML='<div class="ifs">'
+    +'<input class="tfield" id="tfIn" maxlength="30" autocomplete="off" placeholder="'+esc(ph||"")+'" value="'+esc(defVal||"")+'">'
+    +'<div class="ifb"><button class="btn btn-ghost" id="tfC">取消</button>'
+    +'<button class="btn btn-primary" id="tfO">确定</button></div></div>';
+  $("#scrim").dataset.in="1"; s.dataset.in="1";
+  Nav.overlays.push({id:"sheet", close:()=>closeSheet()});
+  const i=b.querySelector("#tfIn");
+  setTimeout(()=>{ try{ i.focus(); }catch(e){} },280);
+  b.querySelector("#tfC").onclick=()=>closeSheet();
+  const ok=()=>{ const v=(i.value||"").trim();
+    if(!v){ toast("先起个名字"); try{i.focus();}catch(e){} return; }
+    closeSheet(); setTimeout(()=>onOk(v),160); };
+  b.querySelector("#tfO").onclick=ok;
+  i.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); ok(); } });
+}
+/* 加入歌单：真歌单列表 + 一键新建（不是「开发中」） */
+function plSheet(s){
+  const items=PL.all().map(p=>({
+    i:ICONS.list, l:p.name,
+    sub:(PL.has(p.id,s)?"已收录 · ":"")+p.songs.length+" 首",
+    on:PL.has(p.id,s),
+    fn:()=>{
+      if(PL.has(p.id,s)){ toast("「"+p.name+"」里已经有这首了"); return; }
+      PL.add(p.id,s); toast("已加入「"+p.name+"」");
+    }
+  }));
+  if(!items.length){
+    items.push({i:ICONS.plus, l:"还没有歌单，点这里新建", fn:()=>newPlaylist(s)});
+  }else{
+    items.push(null, {i:ICONS.plus, l:"新建歌单…", fn:()=>newPlaylist(s)});
+  }
+  openSheet("加入歌单", s.t+" · "+s.s, items);
+}
+function newPlaylist(s, done){
+  inputSheet("新建歌单","给它起个名字，最多 30 字","例如：深夜循环 / 通勤 BGM",v=>{
+    const p=PL.create(v);
+    if(!p){ toast("「"+v+"」这个名字已经有了"); return; }
+    if(s) PL.add(p.id,s);
+    toast("已创建「"+p.name+"」"+(s?"，并收录这首":""));
+    if(typeof done==="function") done(p);
+  });
+}
 function closeSheet(cb){
   $("#scrim").dataset.in=""; $("#sheet").dataset.in="";
   Nav.overlays=Nav.overlays.filter(o=>o.id!=="sheet");
@@ -3908,14 +4331,11 @@ function moreSheet(s, list, i, ctx){
   const isMV=false;
   openSheet(s.t, s.s+(s.a?" · "+s.a:""), [
     {i:ICONS.play,l:"立即播放",fn:()=>{P.load(list,i,ctx);openPlayer();}},
-    {i:ICONS.list,l:"下一首播放",fn:()=>{toast("已加入下一首："+s.t);}},
-    {i:ICONS.plus,l:"加入歌单…",fn:()=>openSheet("加入歌单","选择目标歌单",[
-      {i:ICONS.plus,l:"新建歌单…",fn:()=>toast("歌单功能正在开发中")},
-      {i:ICONS.list,l:"我喜欢的音乐",sub:`${Store.count("fav")} 首`,fn:()=>{if(!Store.favOn(s))Store.toggleFav(s);toast("已加入「我喜欢的音乐」");}},
-      null,
-      {i:ICONS.x,l:"取消",fn:()=>{}}
-    ])},
-    {i:ICONS.dl,l:"下载",fn:()=>toast("已开始下载："+s.t)},
+    {i:ICONS.list,l:"下一首播放",fn:()=>{P.nextUp(s);}},
+    {i:ICONS.plus,l:"加入歌单…",fn:()=>plSheet(s)},
+    {i:ICONS.dl,l:"加入下载列表",fn:()=>{ const ok=Store.addDl(s); toast(ok?"已加入下载列表（播放仍需联网）":"已经在下载列表里了","↓"); }},
+    {i:ICO_SPEED,l:"播放速度",sub:Rate.label(Rate.v()),fn:rateSheet},
+    {i:ICO_CLOCK,l:"定时关闭",sub:Sleep.active()?"进行中":"未开启",fn:sleepSheet},
     {i:ICONS.person,l:"查看歌手",fn:()=>{closeSheet();openArtist(s.s.split("/")[0]);}},
     null,
     {i:ICONS.share,l:"分享",fn:()=>{const txt=`${s.t} - ${s.s}`;(navigator.share?navigator.share({title:s.t,text:txt}):(navigator.clipboard&&navigator.clipboard.writeText(txt),Promise.resolve())).then(()=>{}).catch(()=>{});toast("已复制歌曲信息");}},
@@ -4047,18 +4467,24 @@ $("#plActFav").onclick=function(){
 };
 $("#plActDl").onclick=function(){
   const s=P.cur(); if(!s){toast("还没有播放歌曲");return;}
-  if(Store.isDl(s)){ this.classList.add("on"); toast("已在「我的 · 已下载」里"); return; }
+  if(Store.isDl(s)){ this.classList.add("on"); toast("已在「我的 · 下载列表」里"); return; }
   Store.addDl(s); this.classList.add("on");
   const lb=this.querySelector("span");                       // 按钮本体也变字：点没点上一眼可见
-  if(lb){ const old=lb.textContent; lb.textContent="已下载";
+  if(lb){ const old=lb.textContent; lb.textContent="已加入";
           setTimeout(()=>{lb.textContent=old;},1800); }
-  toast("已下载到「我的」："+s.t,"↓");
+  /* ★ 2026-10-23 诚实化：此前这里只往 localStorage 记一条就叫「已下载」，
+     并没有真的把音频存到本机 —— 断网点开必然播不了，属于假功能。
+     真离线缓存要原生把字节写到沙盒（Android/iOS 两套），当前版本还没接上，
+     所以文案如实写清：这是「下载列表」，播放仍需联网。 */
+  toast("已加入下载列表（本版本播放仍需联网）","↓");
 };
 $("#plActCmt").onclick=()=>openComments(P.cur());
 $("#plActLyric").onclick=()=>setLyricView();
 $("#plCover").onclick=()=>setLyricView();
 $("#plInfo").onclick=()=>setLyricView();
 $("#plQual").onclick=e=>{ e.stopPropagation(); qualitySheet(); };
+$("#plRate").onclick=e=>{ e.stopPropagation(); rateSheet(); };
+$("#plSleep").onclick=e=>{ e.stopPropagation(); sleepSheet(); };
 /* 音质切换：换档后当前这首立刻按新档位重解析（进度保留） */
 function qualitySheet(){
   const s=P.cur();
@@ -4077,16 +4503,8 @@ $("#plLyric").addEventListener("click",e=>{ if(!e.target.closest(".lyr-l")) setL
 /* 音量交给系统（iOS 音量键直接控制输出），播放器内不再放软件音量条 */
 /* 播放来源可点 → 回到来源列表 */
 $("#plFromSub").onclick=()=>{ if(!P.queue.length) return; listSheet(P.queue,P.ctx); };
-/* 定时关闭（真到点停止） */
-let _timerMin=0, _timerId=null;
-function sleepTimer(min){
-  _timerMin=min||0;
-  if(_timerId){ clearTimeout(_timerId); _timerId=null; }
-  if(_timerMin>0){
-    _timerId=setTimeout(()=>{ try{ P.stop(); }catch(e){} toast("定时到，已停止播放"); _timerMin=0; }, _timerMin*60000);
-    toast("将在 "+_timerMin+" 分钟后停止播放");
-  } else toast("已取消定时关闭");
-}
+/* 定时关闭：统一走上面的 Sleep 模块（旧版 sleepTimer 是无调用者的孤岛代码，
+   与 Sleep 并存会出现「两个定时器各管一半」的隐性问题，2026-10-23 已删）。 */
 $("#mvClose").onclick=()=>closeMV();
 $("#sheetX").onclick=()=>closeSheet();
 $("#mvplayer").addEventListener("click",e=>{ if(e.target.id==="mvplayer") closeMV(); });
