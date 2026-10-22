@@ -1594,10 +1594,73 @@ function streamId(s){                                  // 当前生效平台的 
 function srcUrl(s){
   const r=stRec(s); if(!r) return "";
   const sid=String(r.src||"wy").trim()||"wy", id=r[sid];
+  return srcUrlOf(sid, id);
+}
+/* 按「源 + id」拼直链（srcUrl 与候选链共用一套口径，避免两处规则漂移） */
+function srcUrlOf(sid, id){
+  sid=String(sid||"wy").trim()||"wy";
   if(!id) return "";
   if(sid==="kw") return "http://antiserver.kuwo.cn/anti.s?type=convert_url&rid=MUSIC_"+id+"&format=mp3&response=url";
   if(sid==="migu"||sid==="mg") return "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenV2?contentId="+id+"&resourceType=2&format=mp3";
   return "https://music.163.com/song/media/outer/url?id="+id+".mp3";
+}
+
+/* =====================================================================
+   多源映射（xmap）+ 播放故障自动换源（2026-10-22 新增）
+   ---------------------------------------------------------------------
+   为什么加：体检曲库 75,997 首时发现 **多源同曲映射 = 0 条** ——
+   某首歌的网易直链一 404 就彻底没声，所谓「备用线路」根本不存在。
+   现在云端用酷我/咪咕搜索把「同一个人在别的平台唱同一首歌」的 id 落成
+   data/streams/xmap.js（严格校验：标题剥后缀后必须完全相等 + 歌手归一相等/包含
+   + 时长差 ≤3s + 排除伴奏/现场/DJ/翻唱），端上按这个表组候选链。
+   换源时机：<audio> 触发 error（而不是盲跳下一首）→ 先换线路，全挂才跳歌。
+   ===================================================================== */
+const XMAP=(function(){
+  const KEY="dwg.xmap.v1";
+  let map=null, p=null;
+  function load(){
+    if(p) return p;
+    try{ const c=localStorage.getItem(KEY); if(c){ const o=JSON.parse(c);
+      if(o&&typeof o==="object") map=o; } }catch(e){}
+    p=loadScript(((typeof CDN_DYN!=="undefined"&&CDN_DYN)?CDN_DYN:CDN)+"streams/xmap.js", 12000)
+      .then(ok=>{
+        if(ok&&window.__DWG_XMAP&&typeof window.__DWG_XMAP==="object"){
+          map=window.__DWG_XMAP;
+          try{ localStorage.setItem(KEY, JSON.stringify(map)); }catch(e){}
+        }
+        return map;
+      }).catch(()=>map);
+    return p;
+  }
+  return {
+    boot(){ load(); },
+    ids(s){ if(!map||!s) return null; return map[skey(s.t,s.s)]||null; },
+    size(){ return map?Object.keys(map).length:0; }
+  };
+})();
+
+/* 候选链顺序按「实测可用率」排：网易云 > 咪咕 > 酷我
+   （2026-10-22 实测：咪咕匿名可播率最高、搜索也最准；酷我华语主流曲常年缺版权，
+     搜「稻香 周杰伦」20 条里只有 DJ版/片段/搞笑版，原版根本不在了）。 */
+const SRC_ORDER=["wy","migu","kw"];
+function streamCands(s){
+  const out=[], seen=new Set();
+  const push=(src,id)=>{
+    if(!id) return;
+    const u=srcUrlOf(src,id);
+    if(!u||seen.has(u)) return;
+    seen.add(u); out.push({src:src, id:String(id), url:u});
+  };
+  const m=XMAP.ids(s);
+  if(m&&m.ids){
+    const own=m.src||"wy";
+    push(own, m.ids[own]);
+    SRC_ORDER.forEach(k=>{ if(k!==own) push(k, m.ids[k]); });
+  }
+  const r=stRec(s);
+  if(r){ const sid=String(r.src||"wy"); push(sid, r[sid]||r.wy); }
+  else if(s&&s.id) push(s.src||"wy", s.id);
+  return out;
 }
 function cmtOf(s){ return (s&&DB.cmt[skey(s.t,s.s)])||null; }
 /* 歌词：先看包内快照，没有则等实时拉取（undefined=还没取过，null=取过但没有）
@@ -1613,6 +1676,11 @@ function lyricOf(s){ const k=lyrKey(s);
   const hn=DB.lyr&&DB.lyr[nk]; if(hn) return hn;
   /* 兼容老格式（纯名字键）——线上已有 1290 首按此存 */
   const old=DB.lyr&&DB.lyr[skey(s.t,s.s)]; if(old) return old;
+  /* ③ LRCLIB 分片（云端已对齐好时间轴）。排在快照之后：中文歌网易云官方词更准，
+     LRCLIB 补的是「快照里没有 / 没有时间轴」的那一大片。分片没加载完时返回 null，
+     由 LYRLIVE.fetch 去异步取，渲染层先显示"正在取歌词"。 */
+  const lr=LRJS.peek(skey(s.t,s.s));
+  if(lr&&lr.l) return {l:lr.l, t:"", src:"lrclib"};
   return undefined; }
 /* 兜底直链：见上方 srcUrl()（按 src 拼 wy/kw/mg 各自直链）
    —— 桥挂了也不会没声。 */
@@ -2143,7 +2211,9 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   start(awaitQual){
     const s=this.cur(); if(!s) return;
     const a=this.au(), token=++this._tok;
-    const fb=srcUrl(s);
+    /* 候选链：本曲所有能播的线路（主源 + xmap 里的备用源）。出错时挨个换，换完才跳歌。 */
+    this._cands=streamCands(s); this._ci=0;
+    const fb=(this._cands[0]&&this._cands[0].url)||srcUrl(s);
     this.t=0; this.tot=s.dur||0; this.qLabel="";
     applyTheme(s);                       // 背景/主题跟随当前播放的封面主色
     Store.pushRecent(s);                 // 最近播放真落地（刷新不丢）
@@ -2184,6 +2254,23 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   },
   toggle(){ const a=this.au(); if(!this.cur()) return;
     if(a.paused){ const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>{}); } else a.pause(); },
+  /* 换源：当前线路播不了就试下一条。返回 true 表示已接管（别跳歌）。 */
+  tryNextSrc(){
+    const c=this._cands||[];
+    if(this._ci+1>=c.length) return false;
+    this._ci++;
+    const n=c[this._ci];
+    if(!n||!n.url) return false;
+    const label = n.src==="wy"?"网易云线路" : n.src==="migu"?"咪咕线路" : n.src==="kw"?"酷我线路" : "备用线路";
+    this.qLabel=label;
+    try{
+      const a=this.au(); a.src=n.url;
+      const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>{});
+    }catch(e){ return false; }
+    toast("这条线路不通，已切到"+label);
+    this.paint();
+    return true;
+  },
   next(d){
     const q=this.queue; if(!q.length) return;
     if(this.mode==="shuffle"&&q.length>1){ let n=this.i; while(n===this.i) n=Math.floor(Math.random()*q.length); this.i=n; }
@@ -2285,8 +2372,16 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   a.addEventListener("play",()=>{ P.playing=true; P.paint(); MS.playback("playing"); });
   a.addEventListener("pause",()=>{ P.playing=false; P.paint(); MS.playback("paused"); });
   a.addEventListener("ended",()=>{ if(P.mode==="one"){ try{ a.currentTime=0; a.play(); }catch(e){} return; } P.next(1); });
-  a.addEventListener("error",()=>{ if(!P.cur()) return; P.playing=false; P.errs++; P.paint();
-    if(P.errs<4){ toast("音源不可用，已跳过","!"); setTimeout(()=>P.next(1),500); } else { toast("连续多首无可用音源"); } });
+  /* ★ 2026-10-22：出错先换源，不是直接跳歌。
+     旧逻辑一响 error 就 toast「已跳过」→ 用户眼看着歌被跳掉，其实换个线路就能放。
+     现在 streamCands() 给出了本曲的全部线路，挨个试完才认输。 */
+  a.addEventListener("error",()=>{
+    if(!P.cur()) return;
+    if(P.tryNextSrc()) return;                 // 还有备用线路 → 已切过去，别动队列
+    P.playing=false; P.errs++; P.paint();
+    if(P.errs<4){ toast("本曲所有线路都不可用，已跳过","!"); setTimeout(()=>P.next(1),500); }
+    else { toast("连续多首无可用音源"); }
+  });
 })();
 
 /* =====================================================================
@@ -2349,12 +2444,28 @@ LYRLIVE.http = async function(sid){
 LYRLIVE.fetch = async function(s){
   const k=lyrKey(s);                     /* id 优先：与取流同源，保证「这版音频配这版词」 */
   if(this.tried[k]) return;
-  /* ★ 2026-10-06 多源：只有网易云曲目能走 id 拉词（桥/HTTP 都是网易云接口）。
-     酷我/咪咕曲目没有词接口 → 直接按「歌名|歌手」查包内快照，别再空等。 */
+  this.tried[k]=1;                       /* 先占位，避免连点换歌时重复请求 */
+  const nk="n:"+skey(s.t,s.s);
+
+  /* ① LRCLIB 分片（2026-10-22 新增）：云端 Actions 预取好的带时间轴歌词。
+     ★ 这一条对**酷我/咪咕/QQ 曲目**是唯一有希望的来源 —— 它们没有词接口，
+       旧版只能读包内快照（2400 首），覆盖不到就永远「暂无歌词」。 */
+  try{
+    const lr=await LRJS.get(skey(s.t,s.s));
+    if(lr&&lr.l){
+      const rec={l:lr.l, t:"", src:"lrclib"};
+      this.cache[k]=rec; if(nk!==k) this.cache[nk]=rec;
+      const cur=P.cur();
+      if(cur&&lyrKey(cur)===k){ LY.key=""; renderLyricIfNeeded(cur); }
+      return;
+    }
+  }catch(e){}
+
+  /* ② 网易云 id 直取（中文歌官方词，还带翻译） */
   const r0=stRec(s);
   const wyId=(r0 && (r0.src||"wy")==="wy") ? r0.wy : (s&&s.id?s.id:null);
-  if(!wyId){ this.tried[k]=1; this.cache[k]=DB.lyr&&DB.lyr["n:"+skey(s.t,s.s)]||null; return; }
-  this.tried[k]=1;
+  /* 非网易云曲目：没有词接口 → 直接回落包内快照，别再空等 */
+  if(!wyId){ this.cache[k]=DB.lyr&&DB.lyr[nk]||null; return; }
   /* 桥可用走桥（更稳）；桥不可用（Web 预览/桥未就绪）退回纯 HTTP —— 歌词接口 CORS 开放 */
   let r=null;
   if(Native.ok){ r=await Native.call("lyric",{id:wyId}, 8000).catch(()=>null); }
@@ -2362,11 +2473,104 @@ LYRLIVE.fetch = async function(s){
   /* 双写：id 键（新，精确）+ 名字键（兼容包内快照的旧键） */
   const rec = (r && r.l) ? {l:r.l, t:r.t||"", src:"live"} : null;
   this.cache[k]=rec;
-  const nk="n:"+skey(s.t,s.s);
   if(nk!==k) this.cache[nk]=rec;
   const cur=P.cur();
   if(cur && lyrKey(cur)===lyrKey(s)){ LY.key=""; renderLyricIfNeeded(cur); }
 };
+
+/* =====================================================================
+   LRCLIB 歌词分片（2026-10-22 新增）
+   ---------------------------------------------------------------------
+   为什么要有这一层（实测数据说话，别再走回头路）：
+     · 2026-10-22 本机（国内家宽）直连 lrclib.net/api/get：
+         单请求 5.8s；40 首串行跑 20 分钟没跑完；并发 6 → 22×RST + 18×503。
+       → 端上「边播边查 LRCLIB」是不可能的（歌放完了还在转圈）。
+     · 所以改成：GitHub Actions（海外）串行预取 → data/lyrics/js/ 分片 → jsDelivr
+       → 端上读**静态分片**。分片已带好时间轴，零额外请求。
+   分片为什么是 .js 而不是 .json：
+     App 页面是 file://，这种文档下 fetch/XHR 跨源被拦死，**只放行 script/img**。
+     所以产物形状是 `window.__DWG_LYRS[<i>] = {skey: {l,d,s}, ...}`，用 loadScript 直接吃。
+   怎么只下 1 片而不是全量：
+     清单里每片带 from/to 区间（分片按 key 排序切），端上二分一次 → 唯一一片（~1.5MB）。
+   取词优先级（高→低）：
+     本次会话已取(LYRLIVE.cache) → 包内快照(DB.lyr，网易云官方词) → LRCLIB 分片
+       → 异步兜底（网易云 id 直播接口 → 原生桥直查 LRCLIB）。
+     快排在前是因为中文歌网易云官方的词更准；LRCLIB 补的是「网易云没词/没时间轴」的那一大片。
+   ===================================================================== */
+const LRJS = (function(){
+  const MANKEY="dwg.lyrman.v1";
+  const base=()=>((typeof CDN_DYN!=="undefined"&&CDN_DYN)?CDN_DYN:CDN)+"lyrics/js/";
+  let man=null, manP=null;
+  const waiting={}, shardOf={}, tried={};
+
+  function pickIdx(k){
+    if(!man||!man.shards||!man.shards.length) return -1;
+    let lo=0, hi=man.shards.length-1;
+    while(lo<=hi){
+      const mid=(lo+hi)>>1, s=man.shards[mid];
+      if(!s||!s.from||!s.to) return -1;      // 老清单没区间 → 宁可不用，也别乱猜
+      if(k<s.from) hi=mid-1;
+      else if(k>s.to) lo=mid+1;
+      else return mid;
+    }
+    return -1;
+  }
+
+  function loadMan(){
+    if(man) return Promise.resolve(man);
+    if(manP) return manP;
+    /* 先用本地缓存的清单秒进（冷启动不干等网络），再后台刷一次覆盖 */
+    try{ const c=localStorage.getItem(MANKEY); if(c){ const o=JSON.parse(c);
+      if(o&&o.shards&&o.shards.length&&o.shards[0].from) man=o; } }catch(e){}
+    manP=loadScript(base()+"m.js", 12000).then(ok=>{
+      if(ok&&window.__DWG_LYRMAN&&window.__DWG_LYRMAN.shards){
+        man=window.__DWG_LYRMAN;
+        try{ localStorage.setItem(MANKEY, JSON.stringify(man)); }catch(e){}
+      }
+      return man;
+    }).catch(()=>man);
+    return manP;
+  }
+
+  function loadShard(i){
+    if(shardOf[i]) return Promise.resolve(shardOf[i]);
+    if(waiting[i]) return waiting[i];
+    const sh=man&&man.shards&&man.shards[i];
+    if(!sh) return Promise.resolve(null);
+    waiting[i]=loadScript(base()+sh.file, 20000).then(ok=>{
+      delete waiting[i];
+      if(ok&&window.__DWG_LYRS&&window.__DWG_LYRS[i]){ shardOf[i]=window.__DWG_LYRS[i]; return shardOf[i]; }
+      return null;                            // 三节点全失败才算失败（loadScript 内部已换节点）
+    }).catch(()=>{ delete waiting[i]; return null; });
+    return waiting[i];
+  }
+
+  return {
+    /* 同步查已就绪的分片 —— 热路径（换歌立刻渲染）走这里，绝不阻塞 */
+    peek(k){
+      if(!man||!k) return null;
+      const i=pickIdx(k); if(i<0) return null;
+      const s=shardOf[i]; if(!s) return null;
+      return s[k]||null;
+    },
+    /* 异步取：必要时先拉清单，再拉那一片 */
+    async get(k){
+      if(!k||tried[k]) return this.peek(k);
+      tried[k]=1;
+      await loadMan();
+      const i=pickIdx(k); if(i<0) return null;
+      const s=await loadShard(i);
+      return (s&&s[k])||null;
+    },
+    /* 换歌时后台预热本片（不挡播放） */
+    warm(k){
+      if(!k) return;
+      loadMan().then(()=>{ const i=pickIdx(k); if(i>=0) loadShard(i); }).catch(()=>{});
+    },
+    stats(){ return {count:man?(man.count||0):0, shards:man?(man.shards||[]).length:0,
+                     loaded:Object.keys(shardOf).length}; }
+  };
+})();
 
 const LY = { lines:[], idx:-1, key:"", off:0 };
 function parseLRC(txt){
@@ -2399,6 +2603,7 @@ function mergeTrans(lines, transTxt){
 }
 function renderLyricIfNeeded(s){
   if(!s||!s.t) return;
+  LRJS.warm(skey(s.t,s.s));              /* 后台预热本片，换歌不卡歌词 */
   const key=lyrKey(s);                   /* 与 lyricOf 同一把尺子，避免「渲染了别人版本的词」 */
   if(LY.key===key) return;
   LY.key=key; LY.idx=-1;
@@ -3926,6 +4131,7 @@ function paintFooter(){ /* 已下线：源池等内部状态不再外显 */ }
   setTab("home");
   window.__READY__ = true;
   tvBoot();          /* 电视/大屏：开 D-pad 导航（手机/网页端自动跳过） */
+  XMAP.boot();       /* 后台拉多源映射表（播放故障换源用），不挡首屏 */
   // ② 后台静默拉取公网池，拿到了再刷新（绝不阻塞首屏）
   //   ★★★ 「时效锚点」是「推完手机能不能立刻看到」的命门：
   //     @main 这类已缓存 URL 受分支 12 小时硬缓存（purge / ?t= 都打不动，实测）；
