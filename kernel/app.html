@@ -494,6 +494,14 @@ body{
 .daily .d-tx .s{font-size:12.5px;color:var(--txt2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .daily .d-play{width:42px;height:42px;flex:none;border-radius:50%;border:0;cursor:pointer;
   background:#fff;color:#000;display:flex;align-items:center;justify-content:center}
+/* 每日推荐 + 私人FM 并排 */
+.daily-row{display:flex;gap:10px;align-items:stretch}
+.daily-row .daily{flex:1 1 0;min-width:0;padding:12px 12px;gap:10px}
+.daily-row .daily .d-ic{width:38px;height:38px;border-radius:12px}
+.daily-row .daily .d-tx .t{font-size:15px}
+.daily-row .daily .d-tx .s{font-size:11.5px}
+.daily-row .daily .d-play{width:36px;height:36px}
+.daily.fm{background:linear-gradient(120deg,var(--accent-soft),rgba(255,255,255,.04))}
 .divh{height:.5px;background:var(--line);margin:6px 12px}
 
 /* ============ 搜索 ============ */
@@ -1941,6 +1949,44 @@ const PL = (function(){
 
 const fmt = t=>{t=Math.max(0,Math.floor(t||0));return Math.floor(t/60)+":"+String(t%60).padStart(2,"0");};
 /* =====================================================================
+   私人 FM（对标 QQ音乐/网易云的私人 FM）：口味加权抽歌 + 放到底自动续，
+   永不停止；刚听过的 20 首直接避开，不会连着放同一批。
+   ===================================================================== */
+const FM = (function(){
+  function taste(){
+    const like={};
+    (Store.d.fav||[]).forEach(x=>{ if(x.s) like[x.s]=(like[x.s]||0)+4; });
+    (Store.d.recent||[]).forEach(x=>{ if(x.s) like[x.s]=(like[x.s]||0)+1; });
+    return like;
+  }
+  function pick(n, exclude){
+    const ex=new Set(exclude||[]);
+    const like=taste();
+    const pool=(DB.songs||[]).filter(s=>s&&s.t&&s.s
+      && !ex.has(skey(s.t,s.s)) && !isCv(s.t,s.s,s.a,s.cv) && !isInst(s.t,s.s,s.a));
+    const scored=pool.map(s=>({s:s, w:(like[s.s]||0)+Math.random()*10}));
+    scored.sort((a,b)=>b.w-a.w);
+    const out=[], byS={};
+    for(const it of scored){
+      if(out.length>=n) break;
+      const c=byS[it.s.s]||0; if(c>=2) continue;   // 同歌手最多 2 首
+      byS[it.s.s]=c+1; out.push(it.s);
+    }
+    return out;
+  }
+  return {
+    pick:pick,
+    start(n){
+      const list=pick(n||60,(Store.d.recent||[]).slice(0,20).map(x=>x.k));
+      if(!list.length){ toast("曲库还没载入完，稍等一下"); return false; }
+      P.load(list,0,"私人FM"); openPlayer(); return true;
+    },
+    /* 队列放到底时补货 */
+    more(n,q){ return pick(n||40,(q||[]).slice(-40).map(s=>skey(s.t,s.s))); }
+  };
+})();
+
+/* =====================================================================
    每日推荐（对标 QQ音乐「每日 30 首」/ 网易云「每日推荐」）
    —— 真效果：按本机收藏+最近播放的歌手做口味加权，日期做随机种子，
       同一天反复进来**同一批歌**（不乱跳），第二天自动换一批。
@@ -2523,7 +2569,15 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     if(this.mode==="shuffle"&&q.length>1){ let n=this.i; while(n===this.i) n=Math.floor(Math.random()*q.length); this.i=n; }
     else{
       let n=this.i+(d==null?1:d);
-      if(n>=q.length){ if(this.mode==="order"){ this.stop(); toast("已播放到最后一首"); return; } n=0; }
+      if(n>=q.length){
+        /* 私人FM：放到底不回头，直接补一批新的接着放 */
+        if(this.ctx==="私人FM" && (d==null||d>0)){
+          const more=FM.more(40,q);
+          if(more.length){ const at=q.length; q.push.apply(q,more); this.i=at; this.start(false); return; }
+        }
+        if(this.mode==="order"){ this.stop(); toast("已播放到最后一首"); return; }
+        n=0;
+      }
       if(n<0) n=q.length-1;
       this.i=n;
     }
@@ -3146,12 +3200,17 @@ function buildHome(){
       <div class="hero" aria-label="主视觉海报"></div>
       <div class="hero-info" id="heroInfo" aria-label="当前主视觉歌曲"></div>
 
-      <div class="sec">
+      <div class="sec daily-row">
         <div class="daily" data-daily="1">
           <div class="d-ic">${ICONS.disc}</div>
           <div class="d-tx"><div class="t">每日推荐</div>
-            <div class="s">${Daily.count()} 首 · 按你的口味，每天 0 点更新</div></div>
+            <div class="s">${Daily.count()} 首 · 每日更新</div></div>
           <button class="d-play" aria-label="播放每日推荐">${ICONS.play.replace('width="20" height="20"','width="22" height="22"')}</button>
+        </div>
+        <div class="daily fm" data-fm="1" aria-label="私人FM">
+          <div class="d-ic">${ICONS.play}</div>
+          <div class="d-tx"><div class="t">私人FM</div>
+            <div class="s">无限续播 · 按口味</div></div>
         </div>
       </div>
 
@@ -4020,6 +4079,7 @@ function bindCommon(scope){
     };
     b.onclick=go;
   });
+  scope.querySelectorAll("[data-fm]").forEach(b=>b.onclick=()=>FM.start(60));
 }
 
 /* 全部歌手页（首页「歌手 · 全部」入口） */
