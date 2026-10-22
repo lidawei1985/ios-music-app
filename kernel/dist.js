@@ -494,13 +494,9 @@ body{
 .daily .d-tx .s{font-size:12.5px;color:var(--txt2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .daily .d-play{width:42px;height:42px;flex:none;border-radius:50%;border:0;cursor:pointer;
   background:#fff;color:#000;display:flex;align-items:center;justify-content:center}
-/* 每日推荐 + 私人FM 并排 */
-.daily-row{display:flex;gap:10px;align-items:stretch}
-.daily-row .daily{flex:1 1 0;min-width:0;padding:12px 12px;gap:10px}
-.daily-row .daily .d-ic{width:38px;height:38px;border-radius:12px}
-.daily-row .daily .d-tx .t{font-size:15px}
-.daily-row .daily .d-tx .s{font-size:11.5px}
-.daily-row .daily .d-play{width:36px;height:36px}
+/* 每日推荐 + 私人FM：一律上下摞 —— 并排时卡片只有 ~170px，标题会被挤断成「每日推/荐」 */
+.daily-row{display:flex;flex-direction:column;gap:10px}
+.daily .d-tx .t{white-space:nowrap}
 .daily.fm{background:linear-gradient(120deg,var(--accent-soft),rgba(255,255,255,.04))}
 .divh{height:.5px;background:var(--line);margin:6px 12px}
 
