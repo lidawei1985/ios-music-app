@@ -40,26 +40,6 @@ jobs:
       - name: 准备 xcodegen（预装优先 → brew → 官方包兜底）
         run: |
           set -euo pipefail
-
-          # ★★★ 2026-10-23：并发安全的推送。
-          #   血案：本机用 Git Data API 推了 kernel/android/ 之后，CI 这轮 push 被拒
-          #   （! [rejected] main -> main (fetch first)），于是**已经生成好的
-          #   kernel.json / dist.js 全丢在 runner 上**，远端清单还停在旧版 ——
-          #   用户那边表现就是「推了半天还是不更新」。
-          #   任何时刻都可能有两处同时在写这个仓（本地推内核、数据仓流水线），
-          #   所以 push 一律走 fetch+rebase 重试，别指望一次成功。
-          push_retry() {
-            for k in 1 2 3 4 5; do
-              if git push; then return 0; fi
-              echo "::warning::push 被拒（第 ${k} 次），fetch+rebase 后重试"
-              git fetch origin main || true
-              # -X ours：真冲突时保我们刚生成的内核，别让远端旧文件覆盖新内核
-              git rebase -X ours origin/main || { git rebase --abort || true; sleep 3; continue; }
-              sleep 2
-            done
-            echo "::error::push 连续 5 次失败"
-            return 1
-          }
           if command -v xcodegen >/dev/null 2>&1; then xcodegen --version; exit 0; fi
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
           if brew install xcodegen; then xcodegen --version; exit 0; fi
@@ -160,6 +140,26 @@ jobs:
         # 因此下面一律写成 ${VAR} 显式定界，且用 printf 拼 JSON。
         run: |
           set -euo pipefail
+
+          # ★★★ 2026-10-23：并发安全的推送。
+          #   血案：本机用 Git Data API 推了 kernel/android/ 之后，CI 这轮 push 被拒
+          #   （! [rejected] main -> main (fetch first)），于是**已经生成好的
+          #   kernel.json / dist.js 全丢在 runner 上**，远端清单还停在旧版 ——
+          #   用户那边表现就是「推了半天还是不更新」。
+          #   任何时刻都可能有两处同时在写这个仓（本地推内核、数据仓流水线），
+          #   所以 push 一律走 fetch+rebase 重试，别指望一次成功。
+          push_retry() {
+            for k in 1 2 3 4 5; do
+              if git push; then return 0; fi
+              echo "::warning::push 被拒（第 ${k} 次），fetch+rebase 后重试"
+              git fetch origin main || true
+              # -X ours：真冲突时保我们刚生成的内核，别让远端旧文件覆盖新内核
+              git rebase -X ours origin/main || { git rebase --abort || true; sleep 3; continue; }
+              sleep 2
+            done
+            echo "::error::push 连续 5 次失败"
+            return 1
+          }
           # 复用上一步「打壳」的产出（已含 data-shell=ios + __PLATFORM__）
           python3 scripts/pack.py
           SRC=Resources/app.html
