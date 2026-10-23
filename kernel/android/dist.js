@@ -1892,7 +1892,11 @@ const KUP = {
         bases.push(this.base, this.fallbackBase);
         for(let i=2;i<CDN_NODES.length;i++) bases.push(CDN_NODES[i] + CDN_REPO + "ios-music-app@main/kernel/" + sub);
         // 依次问；谁先给出新内核就用谁（拿到的 r 已是 updated 就不再往下问，不浪费流量）
-        return bases.reduce((p,b)=>p.then(r=>(r && r.ok && r.updated) ? r : pull(b)),
+        /* ★ 2026-10-23：再来一条停止条件 —— 节点回「已是最新」且版本与本地完全一致时，
+           说明这个节点的清单就是当前最新（后续的 @main 档是 12 小时硬缓存，只会返回更旧的），
+           立刻收工。实测没有这条时手动检查要白问 4 个节点、耗时 19 秒。 */
+        const done1=r=> !!r && r.ok && (r.updated || (r.version && r.local && r.version===r.local));
+        return bases.reduce((p,b)=>p.then(r=> done1(r) ? r : pull(b)),
                             Promise.resolve(null));
       }).then(r=>{
         /* 只在“真的问到了 CDN”才记时间戳：通网顺畅时 6 小时一次，
@@ -1903,7 +1907,7 @@ const KUP = {
           console.log("[DWG] 内核已更新到 "+r.version+"（"+Math.round((r.bytes||0)/1048576*10)/10+"MB），下次启动生效");
         }
         if(!r || !r.ok) console.log("[DWG] 内核检查未成功："+(r&&r.msg||"无响应"));
-        else if(!r.updated) console.log("[DWG] 内核已是最新："+r.version);
+        else if(!r.updated) console.log("[DWG] 内核已是最新："+(r.local||r.version));
         if(done) done(r||{ok:false,msg:"没有可用的更新源"});
       }).catch(()=>{ if(done) done({ok:false,msg:"检查失败"}); });
       /* 判据说明（沿用旧逻辑的结论，仍适用）：
