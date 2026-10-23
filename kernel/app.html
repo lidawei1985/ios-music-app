@@ -346,9 +346,15 @@ body{
 .player{position:absolute;inset:0;z-index:70;
   background:linear-gradient(180deg,color-mix(in srgb,var(--a1) 26%,rgba(12,12,18,.6)) 0%,rgba(14,14,18,.78) 56%,rgba(5,5,7,.9) 100%);
   backdrop-filter:blur(36px) saturate(180%);-webkit-backdrop-filter:blur(36px) saturate(180%);
-  display:flex;flex-direction:column;transform:translateY(100%);transition:transform .4s var(--ease);will-change:transform;
-  pointer-events:none}
-.player[data-in="1"]{transform:translateY(0);pointer-events:auto}
+  display:flex;flex-direction:column;transform:translateY(100%);transition:transform .4s var(--ease),visibility 0s linear .4s;will-change:transform;
+  pointer-events:none;visibility:hidden}
+/* ★ 2026-10-23：必须靠 visibility 兜一层。横屏媒体查询里
+   `#mvplayer .ibtn.glass{position:static}` 把 MV 关闭按钮从 absolute 改成 static 后，
+   它会在父级 transform 之外计算出位置 —— 实测 1080p 横屏首页左下角凭空多出一个返回圆钮。
+   visibility:hidden 让整层（含所有子元素）在任何布局状态下都不显形；
+   打开时立刻 visible，关闭时延迟 .4s（等滑出动画走完）再隐藏。 */
+.player[data-in="1"]{transform:translateY(0);pointer-events:auto;visibility:visible;
+  transition:transform .4s var(--ease),visibility 0s}
 .player .grab{height:36px;flex:none;display:flex;align-items:center;justify-content:center;cursor:grab;margin-top:-6px}
 .player .grab i{width:38px;height:5px;border-radius:3px;background:rgba(255,255,255,.28)}
 .pbar{height:50px;flex:none;display:flex;align-items:center;padding:0 6px;gap:4px}
@@ -733,6 +739,10 @@ html[data-tv="1"]{--safe-t:18px;--safe-b:18px}
    `html[data-shell][data-wide="1"]{--con-w:min(1000px,100vw)}`，写了也不生效。
    --con-pad 是用 var(--con-w) 算的，会跟着自动更新。 */
 html[data-shell][data-tv="1"]{--con-w:min(1400px,100vw)}
+/* 首屏信息量：手机式满屏主视觉搬到电视上只是浪费 —— 1080p 电视 dp 仅 540 高，
+   原来 min(64vh,430px)=345 把首屏 64% 吃掉，3 米外看不到任何榜单。压到 46vh（≈250）后
+   第一屏就能露出热搜榜/热门单曲，遥控器一按也有内容可点。 */
+html[data-shell][data-tv="1"] .hero{height:min(46vh,340px)}
 html[data-tv="1"] .scroll{padding-bottom:150px}
 /* 行高/字号：电视 3 米外可读 */
 html[data-tv="1"] .row{height:76px;padding:0 18px}
