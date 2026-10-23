@@ -222,7 +222,11 @@ jobs:
           #     端上探窗口 0 大概率落空 → 内核热更静默退回 @main（慢 12 小时）。
           KERNEL_SHA=$(git rev-parse HEAD)
           python3 scripts/mktide.py --sha "${KERNEL_SHA}" --version "${VER}" --back 18 --prune
-          git add kernel/win
+          # ★★★ 2026-10-23：必须把 kernel/day 一起 add。
+          #   mktide.py 现在会同时写「日锚点」kernel/day/<YYYYMMDD>.js（窗口锚点只覆盖
+          #   最近 2 小时，隔天开机的端上必然探空 → 退回 @main 吃 12 小时硬缓存）。
+          #   只 add kernel/win 的话，日锚点生成在 runner 上却被丢掉，等于没做。
+          git add kernel/win kernel/day
           if git diff --cached --quiet; then
             echo "锚点无变化（同窗口内重复构建，URL 相同、内容相同）"
           else
