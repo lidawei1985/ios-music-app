@@ -1851,7 +1851,12 @@ const KUP = {
   get base(){ return CDN_NODES[0] + CDN_REPO + "ios-music-app@main/kernel/" + this.sub(); },
   get fallbackBase(){ return CDN_NODES[1] + CDN_REPO + "ios-music-app@main/kernel/" + this.sub(); },
   KEY:"dwg.kup.last",          // 上次检查时间，避免每次启动都查
-  everyMs: 6*3600*1000,        // 6 小时最多查一次（不打扰、省流量）
+  /* ★★★ 2026-10-23 从 6 小时改成 30 分钟（用户实测「推了新版手机上看不到」的第三个真因）。
+     原来 6 小时才查一次：重装 APK 后首启记账 → 当天推新内核 → 冷启动发现「距上次 6 小时内」
+     → 直接 return，一次都不问 CDN → 用户体感就是「远程更新根本没实现」。
+     代价其实极小：一次检查 = 3 个节点并行探锚点脚本（命中 ~2s）+ 一条 192 字节 kernel.json；
+     版本相同就不再下 8MB 内核。启动后延后 8 秒且串在首屏之后，不抢资源。 */
+  everyMs: 30*60*1000,         // 30 分钟最多查一次
   check(force, done){
     if(PLAT==="web" || !Native.ok){ if(done) done({ok:false,msg:"当前环境不支持热更新"}); return; }
     try{

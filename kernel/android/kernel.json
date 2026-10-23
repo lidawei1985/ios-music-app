@@ -1,8 +1,8 @@
 {
-  "version": "0cfc0aa0d256",
+  "version": "d54b82e3caa8",
   "file": "dist.js",
-  "bytes": 8627669,
-  "sha256": "0cfc0aa0d256c097b4e28af5029d8dd7a17b3a8a3a950c0e8c78d5c170c263c8",
-  "updated": "2026-10-23T01:55:22Z",
+  "bytes": 8628240,
+  "sha256": "d54b82e3caa894a0b6c07c69cde91c5cea0e8b0b4d5acfdc14e59d93660beb55",
+  "updated": "2026-10-23T01:57:20Z",
   "shell": "android"
 }
