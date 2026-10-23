@@ -45,6 +45,7 @@ import argparse, json, os, subprocess, sys, time
 
 CD = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KEEP = 48            # 保留 48 个窗口 = 8 小时（端上最多追 2 小时，余量充足）
+KEEP_DAYS = 30       # 保留 30 个日锚点（端上最多追 21 天）
 
 
 def win_name(dt=None):
@@ -77,10 +78,33 @@ def prune(outdir, keep=KEEP):
     return n
 
 
+def day_name(dt=None):
+    """按天粒度的锚点名：YYYYMMDD（UTC）。必须与端上 probeTideDay() 逐字符一致。"""
+    t = dt or time.gmtime()
+    return "%04d%02d%02d" % (t.tm_year, t.tm_mon, t.tm_mday)
+
+
+def prune_days(outdir, keep=KEEP_DAYS):
+    if not os.path.isdir(outdir):
+        return 0
+    days = sorted([f[:-3] for f in os.listdir(outdir)
+                   if f.endswith(".js") and len(f) == 11 and f[:-3].isdigit()])
+    n = 0
+    for d in (days[:-keep] if len(days) > keep else []):
+        try:
+            os.remove(os.path.join(outdir, d + ".js")); n += 1
+        except Exception:
+            pass
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sha", default="")
     ap.add_argument("--dir", default="kernel/win")
+    ap.add_argument("--day-dir", default="kernel/day",
+                    help="日粒度锚点目录（端上窗口扫空时的兜底，见 app.html probeTideDay 注释）")
+    ap.add_argument("--no-day", action="store_true", help="不写日锚点")
     ap.add_argument("--version", default="")
     ap.add_argument("--prune", action="store_true")
     ap.add_argument("--back", type=int, default=1)
@@ -113,8 +137,31 @@ def main():
     removed = prune(outdir) if a.prune else 0
     for n, sz in wrote:
         print("  %s  %d B" % (n, sz))
-    print("[mktide] 锚点 sha=%s  写入 %d 个%s"
-          % (sha[:12], len(wrote), ("  清理 %d 个旧窗口" % removed) if removed else ""))
+
+    # ★★★ 2026-10-23 新增：日粒度锚点。
+    #   窗口锚点只覆盖发布后 2 小时，隔天开机的端上必然探空 → 落回 @main 吃 12 小时硬缓存
+    #   → 「推了新内核，用户第二天开机还是旧的」。日锚点让隔天/隔几天的开机也能秒拿 sha。
+    daynote = ""
+    if not a.no_day:
+        ddir = a.day_dir if os.path.isabs(a.day_dir) else os.path.join(CD, a.day_dir)
+        os.makedirs(ddir, exist_ok=True)
+        payload = {"sha": sha, "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))}
+        if a.version:
+            payload["v"] = a.version
+        body = "window.__DWG_TIDE=%s;" % json.dumps(payload, ensure_ascii=False,
+                                                    separators=(",", ":"))
+        ddst = os.path.join(ddir, day_name() + ".js")
+        dtmp = ddst + ".tmp"
+        with open(dtmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+        os.replace(dtmp, ddst)
+        dpruned = prune_days(ddir) if a.prune else 0
+        daynote = "  日锚点 %s%s" % (os.path.basename(ddst),
+                                   ("（清理 %d 个旧日）" % dpruned) if dpruned else "")
+        print("  day/%s  %d B" % (os.path.basename(ddst), len(body.encode("utf-8"))))
+
+    print("[mktide] 锚点 sha=%s  写入 %d 个%s%s"
+          % (sha[:12], len(wrote), ("  清理 %d 个旧窗口" % removed) if removed else "", daynote))
     return 0
 
 
