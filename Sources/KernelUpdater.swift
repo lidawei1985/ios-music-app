@@ -30,14 +30,29 @@ enum KernelUpdater {
                 finish(done, ["ok": false, "msg": "清单取不到", "urged": false]); return
             }
             let file = (man["file"] as? String) ?? "app.html"
+            // ★ 2026-10-23：把清单的发布时间回给页面。各 CDN 节点回源不同步
+            //   （实测同一时刻 fastly 已是 10:21 的清单、jsdmirror 还停在 01:32），
+            //   页面靠它按时间取「最新那个节点」，而不是「最后回答的节点」。
+            let manUpdated = (man["updated"] as? String) ?? ""
 
             // ② 版本没变 → 什么都不做
             let cur = KernelStore.currentVersion()
             if !cur.isEmpty && cur == ver {
-                finish(done, ["ok": true, "updated": false, "version": ver, "msg": "已是最新"]); return
+                finish(done, ["ok": true, "updated": false, "version": ver, "msg": "已是最新",
+                              "local": cur, "manUpdated": manUpdated]); return
             }
             // 首次热更（本地无版本号）时，若包内已经是这一版就没必要下 —— 由页面传入 bundleVer 比对
             let wantMB = (man["bytes"] as? NSNumber)?.intValue ?? 0
+            // ★ 2026-10-23 拒绝降级：锚点缓存会让端上拿到**旧清单**，若只看 version 不同就下载，
+            //   会把新内核覆盖成旧的（版本倒退）。sha 无序，但清单的 updated（UTC ISO）有序：
+            //   比本地已装版本的 updated 还旧/相同 → 判「CDN 还没回源」，跳过。
+            let localT = KernelStore.currentUpdated()
+            if !manUpdated.isEmpty && !localT.isEmpty && manUpdated <= localT {
+                NSLog("[DWG] [KUP] 跳过降级：清单 updated=\(manUpdated) ≤ 本地 \(localT)")
+                finish(done, ["ok": true, "updated": false, "version": ver,
+                              "msg": "云端清单比本地旧（CDN 未回源），跳过",
+                              "local": cur, "manUpdated": manUpdated]); return
+            }
 
             // ③ 下载内核本体（大文件给足超时）
             guard let kURL = URL(string: baseURL + file),
@@ -45,9 +60,10 @@ enum KernelUpdater {
                 finish(done, ["ok": false, "msg": "内核下载失败", "urged": false]); return
             }
             // ④ 落盘（KernelStore.save 内部会校验大小/壳标记/闭合 + 原子替换 + 备份）
-            let r = KernelStore.save(data, version: ver)
+            let r = KernelStore.save(data, version: ver, updated: manUpdated)
             var out: [String: Any] = ["ok": r.ok, "msg": r.msg, "version": ver,
-                                      "bytes": data.count, "wantMB": wantMB]
+                                      "bytes": data.count, "wantMB": wantMB,
+                                      "local": cur, "manUpdated": manUpdated]
             out["updated"] = r.ok
             finish(done, out)
         }

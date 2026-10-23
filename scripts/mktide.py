@@ -84,6 +84,19 @@ def day_name(dt=None):
     return "%04d%02d%02d" % (t.tm_year, t.tm_mon, t.tm_mday)
 
 
+def min_name(dt=None):
+    """按分钟粒度的锚点名：YYYYMMDDHHmm（UTC）。必须与端上 probeTideMin() 逐字符一致。
+
+    ★ 2026-10-23 新增：窗口锚点是 10 分钟粒度，同一窗口内二次发布会**覆盖同名文件**，
+      而 jsDelivr 对同名 URL 吃 @main 的 12 小时硬缓存 → 端上永远读到这 10 分钟里的第一版
+      （安卓侧实测：10:20 推 A、10:22 推 B，10:26 检查仍拿到 A）。
+      分钟级 = 每次发布一个全新 URL，必定秒回。端上只探「当前分钟 + 上一分钟」两个。
+    """
+    t = dt or time.gmtime()
+    return "%04d%02d%02d%02d%02d" % (t.tm_year, t.tm_mon, t.tm_mday,
+                                     t.tm_hour, t.tm_min)
+
+
 def prune_days(outdir, keep=KEEP_DAYS):
     if not os.path.isdir(outdir):
         return 0
@@ -104,7 +117,10 @@ def main():
     ap.add_argument("--dir", default="kernel/win")
     ap.add_argument("--day-dir", default="kernel/day",
                     help="日粒度锚点目录（端上窗口扫空时的兜底，见 app.html probeTideDay 注释）")
+    ap.add_argument("--min-dir", default="kernel/min",
+                    help="分钟粒度锚点目录（同窗口二次发布防覆盖，见 min_name 注释）")
     ap.add_argument("--no-day", action="store_true", help="不写日锚点")
+    ap.add_argument("--no-min", action="store_true", help="不写分钟锚点")
     ap.add_argument("--version", default="")
     ap.add_argument("--prune", action="store_true")
     ap.add_argument("--back", type=int, default=1)
@@ -160,8 +176,35 @@ def main():
                                    ("（清理 %d 个旧日）" % dpruned) if dpruned else "")
         print("  day/%s  %d B" % (os.path.basename(ddst), len(body.encode("utf-8"))))
 
-    print("[mktide] 锚点 sha=%s  写入 %d 个%s%s"
-          % (sha[:12], len(wrote), ("  清理 %d 个旧窗口" % removed) if removed else "", daynote))
+    # ★★★ 2026-10-23 新增：分钟粒度锚点（防同窗口二次发布被 CDN 缓存住，见 min_name 注释）
+    minnote = ""
+    if not a.no_min:
+        mdir = a.min_dir if os.path.isabs(a.min_dir) else os.path.join(CD, a.min_dir)
+        os.makedirs(mdir, exist_ok=True)
+        payload = {"sha": sha, "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))}
+        if a.version:
+            payload["v"] = a.version
+        body = "window.__DWG_TIDE=%s;" % json.dumps(payload, ensure_ascii=False,
+                                                    separators=(",", ":"))
+        mdst = os.path.join(mdir, min_name() + ".js")
+        mtmp = mdst + ".tmp"
+        with open(mtmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+        os.replace(mtmp, mdst)
+        # 分钟锚点量大（1440/天），只保留最近 3 天
+        if a.prune:
+            try:
+                allm = sorted(f[:-3] for f in os.listdir(mdir) if f.endswith(".js"))
+                for old in allm[:-1440 * 3]:
+                    os.remove(os.path.join(mdir, old + ".js"))
+            except Exception:
+                pass
+        minnote = "  分钟锚点 %s" % os.path.basename(mdst)
+        print("  min/%s  %d B" % (os.path.basename(mdst), len(body.encode("utf-8"))))
+
+    print("[mktide] 锚点 sha=%s  写入 %d 个%s%s%s"
+          % (sha[:12], len(wrote), ("  清理 %d 个旧窗口" % removed) if removed else "",
+             minnote, daynote))
     return 0
 
 

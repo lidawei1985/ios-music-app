@@ -73,7 +73,7 @@ enum KernelStore {
     /// 把下载来的内核写进沙盒。返回 (成功, 说明)。
     /// 失败一律不动现有沙盒版 —— 保证「更坏了也能用旧的」。
     @discardableResult
-    static func save(_ data: Data, version: String) -> (ok: Bool, msg: String) {
+    static func save(_ data: Data, version: String, updated: String = "") -> (ok: Bool, msg: String) {
         guard looksValid(data) else {
             return (false, "校验不过（大小/壳标记/闭合）")
         }
@@ -94,9 +94,12 @@ enum KernelStore {
                 try fm.moveItem(at: tmp, to: liveURL)
             }
             // ④ 记版本号
-            let meta = ["version": version,
+            var meta = ["version": version,
                         "savedAt": ISO8601DateFormatter().string(from: Date()),
                         "bytes": String(data.count)]
+            // ★ 2026-10-23：同时记「这个版本在清单里的发布时间」（服务端 UTC ISO）。
+            //   sha 没有先后，判「新版会不会把旧版覆盖回去」只能靠时间。见 KernelUpdater 的抗降级。
+            if !updated.isEmpty { meta["updated"] = updated }
             if let j = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted]) {
                 try? j.write(to: metaURL, options: .atomic)
             }
@@ -187,6 +190,14 @@ enum KernelStore {
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let v = o["version"] as? String else { return "" }
         return v
+    }
+
+    /// 当前沙盒内核在清单里的发布时间（UTC ISO）；没有则空串
+    static func currentUpdated() -> String {
+        guard let d = try? Data(contentsOf: metaURL),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let t = o["updated"] as? String else { return "" }
+        return t
     }
 
     /// 诊断用：内核来源与版本（供设置页展示）

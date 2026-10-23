@@ -226,7 +226,9 @@ jobs:
           #   mktide.py 现在会同时写「日锚点」kernel/day/<YYYYMMDD>.js（窗口锚点只覆盖
           #   最近 2 小时，隔天开机的端上必然探空 → 退回 @main 吃 12 小时硬缓存）。
           #   只 add kernel/win 的话，日锚点生成在 runner 上却被丢掉，等于没做。
-          git add kernel/win kernel/day
+          # ★★★ 再加 kernel/min：分钟级锚点（同 10 分钟窗口内二次发布会覆盖同名文件，
+          #   而 jsDelivr 对同名 URL 吃 12 小时硬缓存 → 端上永远读第一版）。漏 add 同样静默失效。
+          git add kernel/win kernel/min kernel/day
           if git diff --cached --quiet; then
             echo "锚点无变化（同窗口内重复构建，URL 相同、内容相同）"
           else
