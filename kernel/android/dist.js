@@ -1132,9 +1132,41 @@ function probeTideIos(timeoutMs, budgetMs){ return probeTideAny(tideBaseKernel()
    数据那边吃缓存只是「慢一点」，内核这边吃缓存是「版本倒退」，性质完全不同。
    内核检查 30 分钟才一次，现探一次（窗口锚点命中约 2 秒、后台跑）完全值得。
    注意：不要在外面再包 tideGate —— probeTideNet/Day 内部已经各自排队，双层会互等死锁。 */
+/* 分钟级锚点：目录 .../kernel/android/min/<YYYYMMDDHHmm>.js
+   为什么还要这一层：10 分钟窗口锚点在同一窗口内二次发布时**文件名不变**，
+   而 jsDelivr 对同名 URL 吃 12 小时硬缓存 → 端上读到的是这 10 分钟里的第一版（实测过）。
+   分钟级每次发布一个全新 URL，必定秒回。只探「当前分钟 + 上一分钟」两个，成本 2 个 <script>。 */
+function probeTideMin(minBase, timeoutMs){
+  if(minBase === tideBaseKernel()) return Promise.resolve(null);   // 目录没算出来，跳过
+  const now = Date.now();
+  const names = [0,1].map(k=>{
+    const d = new Date(now - k*60000);
+    return String(d.getUTCFullYear())
+      + String(d.getUTCMonth()+1).padStart(2,"0")
+      + String(d.getUTCDate()).padStart(2,"0")
+      + String(d.getUTCHours()).padStart(2,"0")
+      + String(d.getUTCMinutes()).padStart(2,"0");
+  });
+  return tideGate(()=> new Promise(resolve=>{
+    let i = 0;
+    const step = ()=>{
+      if(i >= names.length) return resolve(null);
+      const nm = names[i++];
+      try{ window.__DWG_TIDE = null; }catch(e){}
+      loadScriptRace(minBase + nm + ".js", timeoutMs).then(ok=>{
+        const w = window.__DWG_TIDE;
+        if(ok && w && typeof w.sha === "string" && w.sha.length >= 7) return resolve(w.sha);
+        step();
+      });
+    };
+    step();
+  }));
+}
 function probeTideKernelFresh(timeoutMs, budgetMs){
-  const base = tideBaseKernel();
-  return probeTideNet(base, timeoutMs, budgetMs, 12)
+  const base = tideBaseKernel();                       // .../kernel/android/win/
+  const minBase = base.replace(/\/win\/$/, "/min/");
+  return probeTideMin(minBase, timeoutMs)
+      .then(s=> s || probeTideNet(base, timeoutMs, budgetMs, 12))
       .then(s=> s || probeTideDay(base, 21))
       .then(s=>{ if(s) tideSet(TIDE_KEY_I, s); return s; }).catch(()=>null);
 }
@@ -1892,12 +1924,26 @@ const KUP = {
         bases.push(this.base, this.fallbackBase);
         for(let i=2;i<CDN_NODES.length;i++) bases.push(CDN_NODES[i] + CDN_REPO + "ios-music-app@main/kernel/" + sub);
         // 依次问；谁先给出新内核就用谁（拿到的 r 已是 updated 就不再往下问，不浪费流量）
-        /* ★ 2026-10-23：再来一条停止条件 —— 节点回「已是最新」且版本与本地完全一致时，
-           说明这个节点的清单就是当前最新（后续的 @main 档是 12 小时硬缓存，只会返回更旧的），
-           立刻收工。实测没有这条时手动检查要白问 4 个节点、耗时 19 秒。 */
-        const done1=r=> !!r && r.ok && (r.updated || (r.version && r.local && r.version===r.local));
-        return bases.reduce((p,b)=>p.then(r=> done1(r) ? r : pull(b)),
-                            Promise.resolve(null));
+        /* ★ 2026-10-23：两条修正，都是实测逼出来的。
+           ① 各 CDN 节点回源时间不同步：实测同一时刻 fastly 已是 10:21 的清单、
+              cdn.jsdmirror 还停在 01:32。所以**不能取「最后一个回答」**，要比 manUpdated
+              （UTC ISO 字符串，字典序即时序）取最新的那个。
+           ② 早停条件再加一条：节点回「已是最新」且版本与本地一致 → 它就是当前最新，收工。
+              没有这条时手动检查会白问 8 个 base、耗时 19 秒。 */
+        const better=(a,b)=>{
+          if(!b) return a; if(!a) return b;
+          if(a.updated && !b.updated) return a;
+          if(b.updated && !a.updated) return b;
+          return ((b.manUpdated||"") > (a.manUpdated||"")) ? b : a;
+        };
+        const settle=r=> !!r && r.ok && (r.updated || (r.version && r.local && r.version===r.local));
+        return bases.reduce((p,b)=>p.then(acc=>{
+            if(acc.stop) return acc;
+            return pull(b).then(r=>{
+              const best = better(acc.best, r);
+              return { best: best, stop: settle(r) || !!(best && best.updated) };
+            });
+        }), Promise.resolve({best:null, stop:false})).then(a=>a.best);
       }).then(r=>{
         /* 只在“真的问到了 CDN”才记时间戳：通网顺畅时 6 小时一次，
            但断网/节点全挂时不记账 —— 下次启动立刻重试，而不是静默 6 小时。 */
