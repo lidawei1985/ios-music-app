@@ -1865,6 +1865,7 @@ const KUP = {
     }catch(e){}
     // 延后 8 秒：绝不和首屏渲染、曲库预取抢资源
     setTimeout(()=>{
+      console.log("[DWG] KUP 开始检查（"+(force?"手动":"自动")+"）");
       const pull=b=>Native.call("kcheck", {base:b}, 120000);
       /* ★★★ 先探内核仓的时效锚点（kernel/win/<窗口>.js）：
            @main 的 kernel.json 受分支 12 小时硬缓存 —— 刚推的内核手机上要等半天；
@@ -1889,6 +1890,8 @@ const KUP = {
           // 已落盘，下次启动生效。此处只留一条控制台痕迹，不做任何 UI 打扰。
           console.log("[DWG] 内核已更新到 "+r.version+"（"+Math.round((r.bytes||0)/1048576*10)/10+"MB），下次启动生效");
         }
+        if(!r || !r.ok) console.log("[DWG] 内核检查未成功："+(r&&r.msg||"无响应"));
+        else if(!r.updated) console.log("[DWG] 内核已是最新："+r.version);
         if(done) done(r||{ok:false,msg:"没有可用的更新源"});
       }).catch(()=>{ if(done) done({ok:false,msg:"检查失败"}); });
       /* 判据说明（沿用旧逻辑的结论，仍适用）：
