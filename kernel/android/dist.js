@@ -4136,7 +4136,10 @@ function buildSettings(){
       const paintVer=()=>{ const t=node.querySelector("#kupVerV"); if(!t) return;
         if(!Native.ok){ t.textContent="网页版（无热更）"; return; }
         Native.call("kinfo",{},5000).then(r=>{ if(!node.isConnected) return;
-          t.textContent = r ? ((r.version? "v"+String(r.version).slice(0,12)+" · " : "")+(r.status||"")) : "原生未响应";
+          /* status 本身已经带版本号（"沙盒内核 vXXX · 8MB"），别再拼一次 version，
+             否则会显示成 "vXXX · 沙盒内核 vXXX · 8MB"（真机上截到过）。 */
+          t.textContent = r ? (r.status || (r.version ? "v"+String(r.version).slice(0,12) : "未知"))
+                            : "原生未响应";
         }); };
       const paintLast=()=>{ const t=node.querySelector("#kupLastV"); if(!t) return;
         let ms=0; try{ ms=+(localStorage.getItem(KUP.KEY)||0); }catch(e){}
