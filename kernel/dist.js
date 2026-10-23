@@ -727,6 +727,12 @@ html[data-shell][data-wide="1"] .sec-hd h2{font-size:22px}
         ② 内核自带 D-pad 空间导航（tvMove：方向键按几何最近焦点移动，确定键=点击）；
         ③ data-tv 下整体放大字号/行高/热区，并给焦点一个高对比描边 + 品牌色底。 */
 html[data-tv="1"]{--safe-t:18px;--safe-b:18px}
+/* ★ 2026-10-23：内容列在电视上单独放宽。上面 data-wide 的横屏规则是 1000px 上限，
+   1080p 电视 dp 只有 960 时本就满宽看不出问题，但 4K 电视 dp=1920 时内容只占 52%、
+   两侧大片死区。选择器必须带 [data-shell]：否则优先级低于
+   `html[data-shell][data-wide="1"]{--con-w:min(1000px,100vw)}`，写了也不生效。
+   --con-pad 是用 var(--con-w) 算的，会跟着自动更新。 */
+html[data-shell][data-tv="1"]{--con-w:min(1400px,100vw)}
 html[data-tv="1"] .scroll{padding-bottom:150px}
 /* 行高/字号：电视 3 米外可读 */
 html[data-tv="1"] .row{height:76px;padding:0 18px}
@@ -740,7 +746,9 @@ html[data-tv="1"] .gcard .cov{width:210px;height:210px}
 html[data-tv="1"] .gcard .t{font-size:17px}
 html[data-tv="1"] .mcard,html[data-tv="1"] .mcard .box{width:380px}
 html[data-tv="1"] .mcard .box{height:214px}
-html[data-tv="1"] .sec-hd h2{font-size:26px}
+/* ★ 必须带 [data-shell]：`html[data-shell][data-wide="1"] .sec-hd h2{font-size:22px}`
+   优先级 (0,3,2) 高于 `html[data-tv="1"] .sec-hd h2` (0,2,2)，电视上标题被压回 22px。 */
+html[data-shell][data-tv="1"] .sec-hd h2{font-size:26px}
 html[data-tv="1"] .nav h1{font-size:22px}
 html[data-tv="1"] .tab{font-size:15px;height:64px}
 html[data-tv="1"] .tab .tic{width:62px;height:34px}
