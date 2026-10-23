@@ -772,6 +772,9 @@ html[data-tv="1"] .tab{font-size:15px;height:64px}
 html[data-tv="1"] .tab .tic{width:62px;height:34px}
 html[data-tv="1"] .tab svg{width:30px;height:30px}
 html[data-tv="1"] .tabbar{height:104px}
+/* 焦点环 3px + 6px 描边一共 9px 宽，贴着屏幕边缘的第一个 tab 会被裁掉一半（实测首页 tab
+   左边框缺一角）。给标签栏左右各让 14px，环就完整了。 */
+html[data-shell][data-tv="1"] .tabbar{padding-left:calc(var(--con-pad) + 14px);padding-right:calc(var(--con-pad) + 14px)}
 html[data-tv="1"] .mini{bottom:calc(104px + 6px);height:70px}
 html[data-tv="1"] .mini .cov{width:52px;height:52px}
 html[data-tv="1"] .mini .mt .t{font-size:17px}
