@@ -723,6 +723,12 @@ html[data-shell][data-wide="1"] .sec-hd h2{font-size:22px}
      第一屏只剩一张大图，看不到任何可点内容。压到 52vh，仍在视觉冲击力和信息量之间平衡。 */
   html[data-shell][data-wide="1"] .hero{height:min(52vh,400px)}
 }
+/* ★ 2026-10-23：低高度横屏（1080p 电视 dp 只有 540 高、手机横屏更矮）单独再收一档。
+   nav 自身就吃掉 167（logo 行 115 + 搜索框 52），hero 若还 52vh(=280) 正好顶到标签栏，
+   首屏除了大图什么都露不出来 —— 实测 960x540 就是这样。按 38vh 收，标题行能出来。 */
+@media (orientation:landscape) and (max-height:600px){
+  html[data-shell][data-wide="1"] .hero{height:min(38vh,300px)}
+}
 /* ============ 电视 / 大屏横屏（Android TV · 投影 · 车载）============
    ★★★ 2026-10-22 主人指令：「安卓是否支持横屏大屏电视使用，不支持改成支持手机平板电视」。
    为什么以前 TV 上不能用，三条真原因（不是样式问题）：
@@ -742,9 +748,9 @@ html[data-tv="1"]{--safe-t:18px;--safe-b:18px}
    --con-pad 是用 var(--con-w) 算的，会跟着自动更新。 */
 html[data-shell][data-tv="1"]{--con-w:min(1400px,100vw)}
 /* 首屏信息量：手机式满屏主视觉搬到电视上只是浪费 —— 1080p 电视 dp 仅 540 高，
-   原来 min(64vh,430px)=345 把首屏 64% 吃掉，3 米外看不到任何榜单。压到 46vh（≈250）后
-   第一屏就能露出热搜榜/热门单曲，遥控器一按也有内容可点。 */
-html[data-shell][data-tv="1"] .hero{height:min(46vh,340px)}
+   nav 自身要 167，hero 若占 46vh(248) 就正好顶到标签栏，第一屏除了大图什么都看不到。
+   压到 36vh(≈194) 后，标题行 + 每日推荐/私人FM 入口都能落在首屏，遥控器一按有东西可点。 */
+html[data-shell][data-tv="1"] .hero{height:min(36vh,280px)}
 html[data-tv="1"] .scroll{padding-bottom:150px}
 /* 行高/字号：电视 3 米外可读 */
 html[data-tv="1"] .row{height:76px;padding:0 18px}
