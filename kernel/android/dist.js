@@ -4,6 +4,8 @@
 <meta charset="utf-8" data-page-node-id="aGsdcK2tFTa5Ai3QVaA9OL">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" data-page-node-id="fyqVP79kx6oqoqyBMrrqxY">
 <title>大伟歌 MUSIC</title>
+<meta name="dwg-kernel-build" content="2026-10-23T09:56Z">
+
 <style>
 :root{
   --accent:#ff2d55; --accent-soft:rgba(255,45,85,.14);
