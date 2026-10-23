@@ -719,7 +719,9 @@ html[data-shell][data-wide="1"] .sec-hd h2{font-size:22px}
 /* iPad 横屏（810 高亦 >=700 → 同样命中）：横向更宽，内容列放宽、海报相应限高 */
 @media (orientation:landscape){
   html[data-shell][data-wide="1"]{--con-w:min(1000px,100vw)}
-  html[data-shell][data-wide="1"] .hero{height:min(64vh,430px)}
+  /* ★ 2026-10-23：原 64vh 在横屏平板/大屏上把首屏吃掉三分之二（1280x800 实测 430px），
+     第一屏只剩一张大图，看不到任何可点内容。压到 52vh，仍在视觉冲击力和信息量之间平衡。 */
+  html[data-shell][data-wide="1"] .hero{height:min(52vh,400px)}
 }
 /* ============ 电视 / 大屏横屏（Android TV · 投影 · 车载）============
    ★★★ 2026-10-22 主人指令：「安卓是否支持横屏大屏电视使用，不支持改成支持手机平板电视」。
