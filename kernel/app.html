@@ -1868,22 +1868,33 @@ const CRES = (function(){
     const ns=norm(s.s||"");
     const st=strip(s.t);                                    // 剥掉 (纯享版) 之类的后缀
     const hits=CATALOG.search(s.t, 300) || [];
-    let best=null, bs=-99;
+    let best=null, bs=-99;            // 歌手对得上的最佳解
+    let loose=null, bl=-99;           // 歌手对不上、但这首歌只有极少数人唱过的回退解
+    const singers=new Set();
     for(const h of hits){
       let sc=-99;
       if(norm(h.t)===nt) sc=6;                              // 歌名完全一致
       else if(st && strip(h.t)===st) sc=3;                  // 剥掉括号后缀后一致
       if(sc<-90) continue;
       const hn=norm(h.s||"");
-      if(ns && hn){
-        if(hn===ns) sc+=5;
-        else if(hn.indexOf(ns)>=0 || ns.indexOf(hn)>=0) sc+=2;
-        else continue;                                      // 同名不同人 → 绝不能串
-      }
       if((h.cv||0)===1) sc+=3;                               // 原唱优先
       else if((h.cv||0)===2) sc-=3;                          // 翻唱靠后
-      if(sc>bs){ bs=sc; best=h; }
+      if(ns && hn && (hn===ns || hn.indexOf(ns)>=0 || ns.indexOf(hn)>=0)){
+        if(hn===ns) sc+=5; else sc+=2;
+        if(sc>bs){ bs=sc; best=h; }
+      }else{
+        /* ★ 2026-10-30 补：严格「歌手必须沾边」在实践中把本地翻译**打成了全 0**
+           （主视觉/榜单 94 首里 CRES 一首都翻不出来）—— 因为榜单写法和曲库不一致：
+           榜单写「半吨兄弟」，曲库存的是「于牧野」；榜单写合作别名，曲库存主唱。
+           一律拒绝 = 用户点一首就跳过一首，这就是「根治」要治的东西。
+           折中：这首歌在本库里**只有 1~2 位歌手唱过**（同一 songId 集合去重后），
+           说明它不是那种容易串的名曲，取这个版本远比整首歌没声音强。 */
+        singers.add(hn);
+        if(sc>bl){ bl=sc; loose=h; }
+      }
     }
+    /* 回退也不能糊弄：翻唱版本（cv=2）坚决不顶替 —— 主人要的是「原唱就是原唱」。 */
+    if(!best && loose && singers.size<=2 && (loose.cv||0)!==2) best=loose;
     if(!best) return null;
     return {id:best.i, src:best.src||"wy", cv:+(best.cv||0), ov:best.ov||0, cat:true};
   }
