@@ -975,8 +975,8 @@ w();window.addEventListener("resize",w);window.addEventListener("orientationchan
    原则仍是「宁可慢，不能断」：三档全挂时，图片回落上游 URL、数据回落包内快照。 */
 const CDN_REPO  = "lidawei1985/";
 const CDN_NODES = [
-  "https://gcore.jsdelivr.net/gh/",
   "https://cdn.jsdelivr.net/gh/",
+  "https://gcore.jsdelivr.net/gh/",
   "https://fastly.jsdelivr.net/gh/",
   "https://cdn.jsdmirror.com/gh/"
 ];
@@ -1214,10 +1214,26 @@ const ASSET_NAMES = ["av","kv","cv"];
 /* 本地资源优先：assets/<kind>.json 的 map 里命中就用我们自己的图，没命中回落远程 URL。
    为什么这样做：上游（QQ gtimg / 网易 126）一改域名或加防盗链，头像+KV+封面会**同时白屏**；
    图存在自己这儿，上游怎么死都跟我无关 —— 这就是「沉淀」。 */
+/* ★★★ 2026-10-30 海报/封面白屏根治：
+   实测图仓 8.2 万条索引里约 16% 的文件在 jsDelivr 上直接 403（仓库体积限流），
+   而旧逻辑「本地图挂了就 return」，元素只剩空白 —— 这就是首页海报变黑块的原因。
+   现在三件事：
+     ① 每次用本地图都登记 `本地URL → 上游原图URL`，失败时能原路退回；
+     ② 本地图连续失败 3 次 → 全局熔断，之后直接用上游原图（快、稳、0.1s）；
+     ③ 上游也挂 → 内联 SVG 占位，绝不出现空白元素。 */
+window.__ASSET_FB = window.__ASSET_FB || {};
+window.__ASSET_BAD = 0;
+window.__ASSET_DIRECT = false;
+const ASSET_PH = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><rect width='120' height='120' rx='14' fill='#171b23'/><text x='60' y='80' font-size='48' text-anchor='middle' fill='#4a5160'>♪</text></svg>");
 function assetURL(kind, key, fallback){
   const m = DB["as_"+kind];
   const rel = m && key && m[key];
-  return rel ? (ASSETBASE + rel) : (fallback||"");
+  if(!rel) return fallback||"";
+  if(window.__ASSET_DIRECT) return fallback||ASSET_PH;      // 已熔断：直连上游
+  const url = ASSETBASE + rel;
+  if(fallback) window.__ASSET_FB[url] = fallback;
+  return url;
 }
 
 /* ★★ 图片的「节点回落」（2026-10-06 三测定案）：
@@ -1227,29 +1243,57 @@ function assetURL(kind, key, fallback){
    ★ 只轮换「我们自己 CDN 的图」；上游图（gtimg / 126）和包内相对路径不含节点前缀，
      cdnAlt 原样返回 → 不动，避免把兜底 URL 也改坏（原则：宁可慢，不能错）。
    ★ 每张图最多换到最后一档就停，绝不来回跳（防死循环 / 防抖）。 */
+/* ★ 按文件名反查上游原图：图片换过节点/换过仓后 URL 前缀全变了，只有文件名（webp 哈希）不变。*/
+function assetFallbackOf(url){
+  const FB = window.__ASSET_FB || {};
+  const u = (url || "").split("?")[0];
+  if(FB[u]) return FB[u];
+  const nm = u.split("/").pop();
+  if(!nm) return "";
+  for(const k in FB){
+    if(k.split("/").pop() === nm) return FB[k];
+  }
+  return "";
+}
 document.addEventListener("error", function(ev){
   const el = ev.target;
   if(!el || el.tagName !== "IMG") return;
   const cur = el.getAttribute("src") || "";
+  if(cur.indexOf("data:image/svg+xml") === 0) return;      // 已是占位图，不再折腾
+  /* ① 我们的图仓：分仓四节点 → 主仓 → 上游原图（2026-10-30 重排，主仓不再重复轮节点） */
   for(let i=0;i<CDN_NODES.length;i++){
-    if(cur.indexOf(CDN_NODES[i])===0){
-      if(i+1 >= CDN_NODES.length){
-        /* ★ 2026-10-10 四档节点全试完：若这是**图片分仓**的 URL，再回落到主仓旧路径试一遍
-           （分仓刚建/刚清空、或某个仓被 GitHub 限流时，老资产仍在主仓 HEAD 里有副本）。
-           只跳一次（repoHop 标记），不来回摆 —— 与节点轮换同一条纪律：宁可慢，不能抖。 */
-        if(el.dataset.repoHop !== "1" && cur.indexOf(ASSET_REPOS[0]) >= 0){
-          try{ el.dataset.repoHop = "1"; }catch(e){}
-          el.src = cdnAlt(cur.replace(ASSET_REPOS[0], ASSET_REPOS[1]), 0);
-        }
-        return;                                     // 已是最后一档 → 交给上游 URL 兜底
-      }
+    if(cur.indexOf(CDN_NODES[i]) !== 0) continue;
+    const isMainRepo = cur.indexOf(ASSET_REPOS[1]) >= 0 || cur.indexOf("ios-music-api@") >= 0;
+    if(!isMainRepo && i+1 < CDN_NODES.length){
       const nx = cdnAlt(cur, i+1);
-      if(nx === cur) return;
-      try{ el.dataset.cdnHop = String(i+1); }catch(e){}
-      el.src = nx;
+      if(nx !== cur){ el.src = nx; return; }
+    }
+    if(!isMainRepo && el.dataset.repoHop !== "1" && cur.indexOf(ASSET_REPOS[0]) >= 0){
+      try{ el.dataset.repoHop = "1"; }catch(e){}
+      el.src = cdnAlt(cur.replace(ASSET_REPOS[0], ASSET_REPOS[1]), 0);
       return;
     }
+    break;                                                // 本地路全试完，往下走
   }
+  /* ② 本地全挂 → 上游原图（gtimg/migu，实测 0.1s） */
+  window.__ASSET_BAD = (window.__ASSET_BAD || 0) + 1;
+  if(window.__ASSET_BAD >= 3) window.__ASSET_DIRECT = true;   // 熔断：后续新图直接上游
+  const fb = assetFallbackOf(cur);
+  if(fb && el.dataset.fbHop !== "1"){
+    try{ el.dataset.fbHop = "1"; }catch(e){}
+    el.src = fb;
+    return;
+  }
+  /* ③ 上游也没了 → 内联占位，绝不出现空白块 */
+  if(el.dataset.ph !== "1"){
+    try{ el.dataset.ph = "1"; }catch(e){}
+    el.src = ASSET_PH;
+  }
+}, true);
+/* 图片终于加载成功 → 若之前被 onerror 隐藏过，恢复显示（避免"救回来了但仍不显示"） */
+document.addEventListener("load", function(ev){
+  const el = ev.target;
+  if(el && el.tagName === "IMG" && el.style.display === "none") el.style.display = "";
 }, true);
 
 /* ★★ 2026-10-06 关键修复：歌曲/曲库封面也要走我们自己的图。
@@ -3266,10 +3310,11 @@ function heroMount(node){
   box.innerHTML = Hero.list.map((s,k)=>{
     const h=s.hue||210;
     // 主视觉=真海报：模糊铺底(hero-ext) + 清晰封面(hero-art)，渐变只做氛围层(半透明)
-    const cov=esc(songCover(s,""));
+    // ★ 2026-10-30：首页主视觉直接用上游原图（实测 0.1s 必达），本地图仓只作补位 —— 海报绝不再白屏
+    const cov=esc(s.cov || songCover(s, ""));
     return `<div class="hero-slide${k===0?" on":""}">
       ${cov?`<img class="hero-ext" src="${cov}" alt="" loading="lazy" onerror="this.dataset.e=(+this.dataset.e||0)+1;if(this.dataset.e>5)this.style.display='none'">
-      <img class="hero-art" src="${cov}" alt="" loading="lazy" onerror="this.style.display='none'">`:""}
+      <img class="hero-art" src="${cov}" alt="" loading="lazy" onerror="this.dataset.e=(+this.dataset.e||0)+1;if(this.dataset.e>6)this.style.display='none'" onload="this.style.display=''">`:""}
       <div class="hero-grad" style="background:
         radial-gradient(120% 90% at 18% 8%, hsl(${h} 72% 34% / .5), transparent 62%),
         radial-gradient(120% 100% at 82% 92%, hsl(${(h+46)%360} 64% 26% / .55), transparent 64%),
