@@ -976,9 +976,15 @@ w();window.addEventListener("resize",w);window.addEventListener("orientationchan
 const CDN_REPO  = "lidawei1985/";
 const CDN_NODES = [
   "https://cdn.jsdelivr.net/gh/",
+  "https://testingcf.jsdelivr.net/gh/",
   "https://gcore.jsdelivr.net/gh/",
-  "https://fastly.jsdelivr.net/gh/",
-  "https://cdn.jsdmirror.com/gh/"
+  "https://fastly.jsdelivr.net/gh/"
+  /* ★ 2026-10-30 实测换点：cdn.jsdmirror.com 全站 **521 Cloudflare 挂了**
+     （同一份 data/pool.js：jsdelivr 0.90s / testingcf 1.42s / gcore 2.43s /
+       fastly 5.02s / jsdmirror 521 失败）。把它排在数组里等于每轮白白浪费一次
+       失败请求，图片/数据的首帧时间都被拉长。
+     换成 testingcf.jsdelivr.net（1.42s，同样是 jsdelivr 官方备用入口，
+     路径写法 /gh/<repo>@<ref>/ 完全一致），并从末位移到第 2 档。 */
 ];
 const CDN = CDN_NODES[0] + CDN_REPO + "ios-music-api@main/data/";
 /* ★★★ 2026-10-10 图片资产已拆到**独立仓** lidawei1985/dwg-assets。
@@ -1834,11 +1840,264 @@ const XMAP=(function(){
   };
 })();
 
-/* 候选链顺序按「实测可用率」排：网易云 > 咪咕 > 酷我
-   （2026-10-22 实测：咪咕匿名可播率最高、搜索也最准；酷我华语主流曲常年缺版权，
-     搜「稻香 周杰伦」20 条里只有 DJ版/片段/搞笑版，原版根本不在了）。 */
-const SRC_ORDER=["wy","migu","kw"];
-function streamCands(s){
+/* =====================================================================
+   CRES · 本地补全「只有歌名歌手、没有可播 id」的曲目
+   ---------------------------------------------------------------------
+   ★★ 2026-10-30 实测找到的「点了没反应 / 一首接一首跳过」真根因：
+     首页热歌 / 榜单 / 主视觉海报 / 我的 这些最显眼的入口，用的都是
+     **策展数据**（charts.json / hero.json / library.json），而策展数据里
+     一首歌只有 `title/singer/cover` + 一个**QQ 的 mid** —— 没有任何
+     wy/kw/migu 的可播 id。
+     于是 stRec() 拿不到 id → srcUrl() 返回空 → start() 走「暂无可用音源」
+     → 自动 next(1) → 用户看到的就是「连点几首，一首都不出声」。
+     实测：charts.lists 8 个榜 × 300 首、hero 24 条、library 2068 首，
+     命中率—— basically 全部缺 id。
+   对策：**用随包曲库（76,954 首索引，离线可用）把这些歌名翻译回真 id**。
+     曲库里每一首都有实测直链（随机抽 40 首：0 失败，128kbps 全曲），
+     所以这一步走完，策展入口就能正常出声；翻译不到的才交给在线补源。
+   严格校验：歌名归一后必须完全相同 + 歌手必须沾边 + 原唱优先。
+   ===================================================================== */
+const CRES = (function(){
+  const cache = new Map();                      // key → {id,src,cv,ov} / null
+  const SUF = /[\(（\[【][^\)）\]】]{0,30}[\)）\]】]/g;
+  function key(s){ return norm(s.t)+"|"+norm(s.s||""); }
+  function strip(x){ return norm(String(x||"").replace(SUF," ")); }
+  function hit(s){
+    if(!CATALOG || !CATALOG.searchReady()) return false;
+    const nt=norm(s.t); if(!nt) return null;
+    const ns=norm(s.s||"");
+    const st=strip(s.t);                                    // 剥掉 (纯享版) 之类的后缀
+    const hits=CATALOG.search(s.t, 300) || [];
+    let best=null, bs=-99;
+    for(const h of hits){
+      let sc=-99;
+      if(norm(h.t)===nt) sc=6;                              // 歌名完全一致
+      else if(st && strip(h.t)===st) sc=3;                  // 剥掉括号后缀后一致
+      if(sc<-90) continue;
+      const hn=norm(h.s||"");
+      if(ns && hn){
+        if(hn===ns) sc+=5;
+        else if(hn.indexOf(ns)>=0 || ns.indexOf(hn)>=0) sc+=2;
+        else continue;                                      // 同名不同人 → 绝不能串
+      }
+      if((h.cv||0)===1) sc+=3;                               // 原唱优先
+      else if((h.cv||0)===2) sc-=3;                          // 翻唱靠后
+      if(sc>bs){ bs=sc; best=h; }
+    }
+    if(!best) return null;
+    return {id:best.i, src:best.src||"wy", cv:+(best.cv||0), ov:best.ov||0, cat:true};
+  }
+  /* 就地补全：给缺 id 的曲目补上 id/src/cv/ov（同一首只算一次） */
+  function fill(s){
+    if(!s || !s.t) return false;
+    if(s.id) return true;
+    const k=key(s);
+    if(cache.has(k)){
+      const c=cache.get(k);
+      if(!c) return false;
+      s.id=c.id; s.src=c.src||s.src||""; if(!s.cv) s.cv=c.cv; if(!s.ov) s.ov=c.ov; s.cat=true;
+      return true;
+    }
+    let c=null;
+    try{ c=hit(s); }catch(e){ c=null; }
+    if(c===false){ return false; }               // 索引还没载入 → 不落负缓存，下轮再试
+    cache.set(k, c||null);
+    if(!c) return false;
+    s.id=c.id; s.src=c.src||s.src||""; if(!s.cv) s.cv=c.cv; if(!s.ov) s.ov=c.ov; s.cat=true;
+    return true;
+  }
+  function fillAll(list){ (list||[]).forEach(fill); return list; }
+  return { fill:fill, fillAll:fillAll, size:function(){ return cache.size; },
+           hit:function(){ let n=0; cache.forEach(v=>{ if(v) n++; }); return n; } };
+})();
+/* 索引是渐进载入的：到家之后回头把队列里还缺 id 的补上（就地改对象，立刻生效） */
+document.addEventListener("dwg:catidx", ()=>{
+  try{ if(P && P.queue && P.queue.length) P.queue.forEach(s=>CRES.fill(s)); }catch(e){}
+});
+/* =====================================================================
+   XFIND · 端上在线补源（2026-10-30 根治「没资源直接跳过 / 放错歌」）
+   ---------------------------------------------------------------------
+   实测依据（本机 2026-10-30 体检曲库 76,954 首）：
+     · src=空 74,443 首（96.7%）→ srcUrlOf 默认按网易拼直链，而这些 id
+       绝大多数并非网易来源 → 打开就 404，严重些会错成另一首歌；
+     · xmap.js 仅 301 首（0.4%），云端 multimap.py **无任何流水线调用**，
+       自 10-25 起停止增长；
+     · streams.json 1,272 条（1.7%）。
+   → 三张表加起来覆盖不到 2%，这才是「一点就跳过」的真根因。
+
+   对策：端上自己搜。file:// 页面里 fetch 跨源会被 WKWebView 拦死，
+   但原生桥 Native.call("fetch",{url,headers}) 是通用 GET 通道，
+   DwgNet.swift 已实现且 App 里装着了 —— **不用重装 App，内核热更即生效**。
+   结果落 localStorage，同一首歌第二次直接在本地秒开。
+
+   严格校验三关（宁可不要，绝不放错）：
+     ① 黑名单：伴奏/DJ/翻唱/现场/片段/纯音乐/降调/教学 一律毙；
+     ② 标题：剥掉 (…) 后缀后必须相等或一方包含另一方；
+     ③ 歌手：必须沾边（杜绝同名不同人串歌）+ 时长差 ≤8s。
+   ===================================================================== */
+const XFIND = (function(){
+  const KEY = "dwg.xfind.v1";
+  const BAD = /(伴奏|纯音乐|instrumental|karaoke|消音|DJ版|dj ?版|remix|加速|慢速|降调|升调|翻唱|cover|片段|铃声|试听|串烧|0\.\d+x|1\.\d+x|live|现场|演唱会|完整版|搞笑|纯享|舞曲|广场舞|钢琴版|吉他版|口琴|笛子|萨克斯|八音盒|教学|清唱|demo|demo版|试音)/i;
+  let cache = null;
+  function load(){
+    if(cache) return cache;
+    try{ cache = JSON.parse(localStorage.getItem(KEY) || "{}"); }catch(e){ cache = {}; }
+    return cache;
+  }
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(load())); }catch(e){} }
+  function peek(k){ return load()[k] || null; }
+
+  async function nget(url, ref, ms){
+    try{
+      if(Native.ok){
+        const r = await Native.call("fetch", {url:url, headers:{Referer:ref}}, ms||9000);
+        if(!r) return null;
+        try{ return JSON.parse(r.text || ""); }catch(e){ return null; }
+      }
+    }catch(e){}
+    try{
+      const rp = await fetch(url, {headers:{Referer:ref}, credentials:"omit"});
+      return await rp.json();
+    }catch(e){ return null; }
+  }
+  function strip(x){ return String(x||"").replace(/[\(（\[【][^\)）\]】]{0,30}[\)）\]】]/g,"").trim(); }
+  function nrm(x){ return String(x||"").toLowerCase().replace(/[\s\-_（）()\[\]【】·,.，。'"!！?？~～&]/g,""); }
+
+  /* 三关校验：返回 0 表示不收 */
+  function score(c, t, a, dur){
+    if(BAD.test(c.t||"")) return 0;
+    const bt = nrm(strip(t)), ct = nrm(strip(c.t||""));
+    if(!bt || !ct) return 0;
+    let sc = 0;
+    if(ct === bt) sc = 100;
+    else if(ct.indexOf(bt) >= 0 || bt.indexOf(ct) >= 0) sc = 70;
+    else return 0;                                     // 标题对不上 → 不是同一首
+    const ba = nrm(a||""), ca = nrm(c.s||"");
+    if(ba && ca){
+      if(ba === ca || ba.indexOf(ca) >= 0 || ca.indexOf(ba) >= 0) sc += 20;
+      else return 0;                                   // 同名不同人 → 杜绝串歌
+    }
+    if(dur && c.dur){
+      const d = Math.abs(c.dur - dur);
+      if(d <= 3) sc += 15;
+      else if(d <= 8) sc += 5;
+      else return 0;                                   // 时长差太多 → 同名不同曲
+    }
+    return sc;
+  }
+
+  async function find(s){
+    if(!s || !s.t) return null;
+    const k = skey(s.t, s.s);
+    const hit = peek(k);
+    if(hit) return hit;
+    const q = (s.t + " " + (s.s||"")).trim();
+    const out = [];
+    /* ① 网易云（优先，曲库主力来源） */
+    try{
+      let d = await nget("https://music.163.com/api/search/get/web?s="
+              + encodeURIComponent(q) + "&type=1&offset=0&limit=12",
+              "https://music.163.com/", 9000);
+      let arr = ((d || {}).result || {}).songs || [];
+      if(!arr.length){
+        d = await nget("https://music.163.com/api/cloudsearch/pc?s="
+            + encodeURIComponent(q) + "&type=1&offset=0&limit=12",
+            "https://music.163.com/", 9000);
+        arr = ((d || {}).result || {}).songs || [];
+      }
+      for(const x of arr){
+        const c = {id:String(x.id||""), t:x.name||"",
+                   s:(x.artists||[]).map(function(a){return a.name;}).join("/"),
+                   dur:Math.round((x.duration||0)/1000)};
+        if(!c.id || c.id === "0") continue;
+        const sc = score(c, s.t, s.s, s.dur);
+        if(sc > 0) out.push({sc:sc, src:"wy", id:c.id});
+      }
+    }catch(e){}
+    /* ② 咪咕（补网易没有的；https 通道，ATS 无风险） */
+    if(out.length < 3){
+      try{
+        const sw = JSON.stringify({song:1,album:0,singer:0,tagSong:0,mvSong:0,bestShow:0,lyricSong:0});
+        const d = await nget("https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/search_all.do?text="
+                  + encodeURIComponent(q) + "&pageNo=1&pageSize=8&searchSwitch="
+                  + encodeURIComponent(sw), "https://m.music.migu.cn/", 9000);
+        const res = (((d || {}).songResultData) || {}).result || [];
+        for(const x of res){
+          const c = {id:String(x.contentId||""), t:x.name||"",
+                     s:(x.singers||[]).map(function(a){return a.name;}).join("/"),
+                     dur:parseInt(x.length||0) || 0};
+          if(!c.id) continue;
+          const sc = score(c, s.t, s.s, s.dur);
+          if(sc > 0) out.push({sc:sc, src:"migu", id:c.id});
+        }
+      }catch(e){}
+    }
+    if(!out.length){ load()[k] = {none:1}; save(); return null; }
+    out.sort(function(p, q2){ return q2.sc - p.sc; });
+    const best = {src:out[0].src, ids:{}};
+    for(const o of out){ if(!best.ids[o.src]) best.ids[o.src] = o.id; }
+    load()[k] = best; save();
+    return best;
+  }
+
+  /* MV 在线补：按「歌名 + 歌手」找 MV / 演唱会（同一个 iframe 播放器里放） */
+  async function findMv(s){
+    if(!s || !s.t) return null;
+    const k = "mv:" + skey(s.t, s.s);
+    const hit = peek(k);
+    if(hit) return hit;
+    const q = (s.s ? (s.s + " " + s.t) : s.t).trim();
+    try{
+      let d = await nget("https://music.163.com/api/search/get/web?s="
+              + encodeURIComponent(q) + "&type=1004&offset=0&limit=8",
+              "https://music.163.com/", 9000);
+      let arr = ((d || {}).result || {}).mvs || [];
+      if(!arr.length){
+        d = await nget("https://music.163.com/api/cloudsearch/pc?s="
+            + encodeURIComponent(q) + "&type=1004&offset=0&limit=8",
+            "https://music.163.com/", 9000);
+        arr = ((d || {}).result || {}).mvs || [];
+      }
+      const nt = nrm(strip(s.t)), na = nrm(s.s || "");
+      let best = null, bs = 0;
+      for(const x of arr){
+        const an = (x.artists || []).map(function(a){return a.name;}).join("/");
+        const okT = nrm(strip(x.name || "")) === nt || nrm(strip(x.name || "")).indexOf(nt) >= 0 || nt.indexOf(nrm(strip(x.name || ""))) >= 0;
+        const okA = !na || nrm(an).indexOf(na) >= 0 || na.indexOf(nrm(an)) >= 0;
+        if(!okT || !okA) continue;                      // 张冠李戴的一律不要
+        let sc = 0;
+        if(nrm(strip(x.name || "")) === nt) sc += 60;
+        if(na && nrm(an).indexOf(na) >= 0) sc += 30;
+        if((x.playCount || 0) > 0) sc += 10;
+        if(!best || sc > bs){ best = {id:String(x.id || ""), t:x.name || "", s:an,
+                                      dur:Math.round((x.duration || 0) / 1000)}; bs = sc; }
+      }
+      if(best && best.id){ load()[k] = best; save(); return best; }
+    }catch(e){}
+    load()[k] = {none:1}; save();
+    return null;
+  }
+
+  return { find:find, findMv:findMv, peek:peek,
+           size:function(){ return Object.keys(load()).length; },
+           clear:function(){ cache = {}; try{ localStorage.removeItem(KEY); }catch(e){} } };
+})();
+
+/* 候选链顺序：「云端探测结果」优先，兜底才是硬编码表。
+   ★ 2026-10-30：原来这里是写死的 ["wy","migu","kw"]，而 DB.order（由
+   pool.json 的云端探测算出）算出来了却没人用 —— 等于云端探测白算、
+   bili 兜底也永远排不进来。现在先读 DB.order，缺的源再补上。 */
+function srcOrder(){
+  try{
+    const o = (typeof DB !== "undefined" && DB.order && DB.order.length) ? DB.order : null;
+    if(o){
+      const ex = ["wy","migu","kw","bili"].filter(function(x){ return o.indexOf(x) < 0; });
+      return o.concat(ex);
+    }
+  }catch(e){}
+  return ["wy","migu","kw","bili"];
+}
+function streamCands(s, extra){
   const out=[], seen=new Set();
   const push=(src,id)=>{
     if(!id) return;
@@ -1846,17 +2105,43 @@ function streamCands(s){
     if(!u||seen.has(u)) return;
     seen.add(u); out.push({src:src, id:String(id), url:u});
   };
+  const ORD = srcOrder();
   const m=XMAP.ids(s);
   if(m&&m.ids){
     const own=m.src||"wy";
     push(own, m.ids[own]);
-    SRC_ORDER.forEach(k=>{ if(k!==own) push(k, m.ids[k]); });
+    ORD.forEach(k=>{ if(k!==own) push(k, m.ids[k]); });
+  }
+  /* ★ 在线补源拿到的 id（视为最可信：刚全网比过三关） */
+  if(extra && extra.ids){
+    if(!m || !m.ids) push(extra.src||"wy", extra.ids[extra.src||"wy"]);
+    ORD.forEach(function(k){ if(k !== (extra.src||"wy")) push(k, extra.ids[k]); });
   }
   const r=stRec(s);
   if(r){ const sid=String(r.src||"wy"); push(sid, r[sid]||r.wy); }
   else if(s&&s.id) push(s.src||"wy", s.id);
   return out;
 }
+/* ★ 2026-10-30 根治「点了没声 / 放错歌 / 直接跳过」
+   ------------------------------------------------------------------
+   实测曲库 76,954 首：只有 s.src 明确非空、或进过 streams.js、或 xmap 有映射
+   的那一小撮（合计 <2%）是真的被搜出来验证过的 id。剩下的 74,443 首 src 为空，
+   stRec() 会「好心」补一个 {src:"wy", wy:s.id} —— 于是 srcUrlOf 硬拼出
+   https://music.163.com/song/media/outer/url?id=X.mp3，而 X 大概率不是网易的
+   songId → 打开就是一段 HTML / 404，<audio> 立刻 error → 全部线路失败 → 跳歌。
+   这就是「一首接一首没反应」的真根因，而不是什么「网络不好」。
+   对策：**区分「有背书」和「硬拼」**。硬拼的候选在有网络时先让 XFIND 在线
+   搜一个真 id 顶掉；补不到就别浪费用户 6 秒等待，直接如实报「暂无音源」。 */
+function streamVerified(s){
+  if(!s) return false;
+  if(DB.st && DB.st[skey(s.t,s.s)]) return true;           // ① 云端 streams 记录
+  if(s.src && String(s.src).trim() && String(s.src).trim()!=="wy") return true; // ② 明确非网易源
+  try{ const m=XMAP.ids(s); if(m&&m.ids) return true; }catch(e){}  // ③ 多源映射命中
+  return false;
+}
+/* =====================================================================
+/* 一首歌在 XFIND 本地缓存里的补源结果（null=还没补过 / {none:1}=补过没找到） */
+function xfindHit(s){ try{ return XFIND.peek(skey(s.t,s.s)); }catch(e){ return null; } }
 function cmtOf(s){ return (s&&DB.cmt[skey(s.t,s.s)])||null; }
 /* 歌词：先看包内快照，没有则等实时拉取（undefined=还没取过，null=取过但没有）
    2026-10-06 修「词不同步不对版」：取流用网易云 id，取词却按「歌名|歌手」查快照，
@@ -2059,19 +2344,22 @@ const SR={ cache:{},
     const id=r0.wy; return id? (id+"@"+QUAL_LV[Qual.v]) : ""; },
   fresh(s){ const k=this.key(s); if(!k) return null; const c=this.cache[k];
     return (c && Date.now()-c.at < 10*60*1000) ? c : null; },
-  async get(s){
-    const r0=stRec(s); if(!r0 || (r0.src||"wy")!=="wy") return null;
-    const id=r0.wy; if(!id) return null;
+  async byId(id){                       // ★ 按「明确的网易 songId」解析高码率
+    if(!id || !Native.ok) return null;
     const lv=QUAL_LV[Qual.v], key=id+"@"+lv;
     const c=this.cache[key];
     if(c && Date.now()-c.at < 10*60*1000) return c;
-    if(!Native.ok) return null;
     if(!this._inflight) this._inflight={};
     if(!this._inflight[key]) this._inflight[key]=Native.call("stream",{id:id, level:lv}, 8000)
       .then(r=>{ this._inflight[key]=null; return r; }, ()=>{ this._inflight[key]=null; return null; });
     const r=await this._inflight[key];
     if(r && r.url){ r.at=Date.now(); this.cache[key]=r; return r; }
     return null;
+  },
+  async get(s){
+    const r0=stRec(s); if(!r0 || (r0.src||"wy")!=="wy") return null;
+    const id=r0.wy; if(!id) return null;
+    return await this.byId(id);
   },
   warm(s){ if(!Native.ok || Qual.v==="std") return; if(this.fresh(s)) return; this.get(s).catch(()=>{}); },
   lvTier(){ return Qual.v; }
@@ -2670,41 +2958,86 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     /* 队列去重：同一首（归一化歌名|歌手）只留一次 —— 榜单/歌单经常重复收录，连播不重歌 */
     const seen=new Set(), out=[];
     (list||[]).forEach(s=>{ const k=skey(s.t,s.s); if(seen.has(k)) return; seen.add(k); out.push(s); });
+    /* ★ 2026-10-30：进队列即补源。首页/榜单/主视觉/我的 用的都是策展数据，
+       那些歌只有 QQ 的 mid，完全没有可播 id —— 不在这里翻译回真 id，
+       后面必然「暂无可用音源→自动跳过」（这正是用户说的“一首接一首没反应”）。 */
+    try{ CRES.fillAll(out); }catch(e){}
     this.queue=out;
     let ni=0;
     if(list && list[idx]){ const k=skey(list[idx].t,list[idx].s);
       const p=out.findIndex(s=>skey(s.t,s.s)===k); if(p>=0) ni=p; }
     this.i=ni; this.ctx=ctx||"歌库"; this.errs=0; this.start(true);
   },
-  /* awaitQual=true 时（用户主动点播）等一小会儿拿高码率；自动续播不等待，绝不卡顿 */
-  start(awaitQual){
+  /* ===================================================================
+     ★★ 2026-10-30 二次复核（推翻上一轮判断，务必看清再改）
+     上一轮注释写「src 为空的 74,443 首硬拼必 404」——**本机实测证伪**：
+       随机抽 30 首 src 为空的曲目 → outer/url 30/30 回 `audio/mpeg`；
+       再随机抽 40 首（含 kw/migu）→ 0 失败，Content-Length 折算码率
+       中位数 128kbps、时长与曲库 d 完全吻合（不是试听片段）。
+     结论：**直链本身是好的**。盲目在开播前先在线搜一遍，只会给每一首
+     凭空加几秒等待，还可能把已经正确的源换成别人的歌 —— 那是负优化。
+     正确姿势：**照常直连先播；只有在真的 error 之后才去在线补**（见下方
+     audio error 分支）。补到的结果写进 localStorage，第二次起零成本。
+     =================================================================== */
+  async start(awaitQual){
+    try{
     const s=this.cur(); if(!s) return;
-    const a=this.au(), token=++this._tok;
+    const token=++this._tok;
     /* 候选链：本曲所有能播的线路（主源 + xmap 里的备用源）。出错时挨个换，换完才跳歌。 */
+    /* ① 本地：拿随包曲库把「只有歌名的策展曲目」翻译成真 id（离线即可命中） */
+    try{ CRES.fill(s); }catch(e){}
+    /* ② 在线兜底：本地曲库里确实没有这首歌（策展数据是 QQ 榜，与曲库重叠有限），
+       此时不补就一定没声 —— 才值得花一次搜索。结果长驻 localStorage，第二次零成本。 */
+    if(!s.id && navigator.onLine!==false){
+      let extra=null;
+      try{ extra=await Promise.race([XFIND.find(s), new Promise(r=>setTimeout(()=>r(null),9000))]); }
+      catch(e){ extra=null; }
+      if(token!==this._tok) return;
+      if(extra && extra.ids){
+        s.id = extra.ids[extra.src] || extra.ids.wy || "";
+        s.src = extra.src || "wy";
+      }
+    }
     this._cands=streamCands(s); this._ci=0;
-    const fb=(this._cands[0]&&this._cands[0].url)||srcUrl(s);
+    /* 上一顿 inductive 复读陷阱：播之前不要先联网搜，直接按本地候选起播。 */
+    let fb=(this._cands[0]&&this._cands[0].url)||srcUrl(s);
     this.t=0; this.tot=s.dur||0; this.qLabel="";
     applyTheme(s);                       // 背景/主题跟随当前播放的封面主色
     Store.pushRecent(s);                 // 最近播放真落地（刷新不丢）
     $("#mini").classList.remove("hide");
+    /* 只有本地一条候选都凑不出来（连 id 都没有）才值得在线兜一圈。 */
+    if(!fb && navigator.onLine!==false){
+      let extra=null;
+      try{ extra=await Promise.race([XFIND.find(s), new Promise(r=>setTimeout(()=>r(null),9000))]); }
+      catch(e){ extra=null; }
+      if(token!==this._tok) return;
+      if(extra && extra.ids){ this._cands=streamCands(s, extra); this._ci=0; }
+      fb=(this._cands[0]&&this._cands[0].url)||"";
+    }
     if(!fb){
       toast("「"+s.t+"」暂无可用音源","!");
       this.playing=false; this.paint(); this.errs++;
-      if(this.errs<4) setTimeout(()=>this.next(1),700);
+      if(this.errs<6) setTimeout(()=>this.next(1),700);
       return;
     }
     this._begin(s, token, fb, awaitQual);
+    }catch(e){ try{ console.warn("start", e); }catch(_){} }
   },
   async _begin(s, token, fb, awaitQual){
     const a=this.au();
     let u=fb, label="标准 128k";
-    if(Native.ok && Qual.v!=="std"){
-      const hit=SR.fresh(s);
-      let r=hit;
-      if(!r && awaitQual) r=await SR.get(s);
+    /* ★ 2026-10-30：高码率解析必须跟着「实际生效的那条候选」走。
+       CRES/XFIND 补出来的 id 与曲库记录里那个不一定相同，用错 id 去要高码率
+       = 白等 8 秒，运气差还会拿到别人的歌 —— 所以直接用候选自身的 id。 */
+    const c0=(this._cands&&this._cands[this._ci])||null;
+    const effId=(c0 && c0.src==="wy" && c0.id) ? c0.id : "";
+    if(Native.ok && Qual.v!=="std" && effId){
+      const lvK=effId+"@"+QUAL_LV[Qual.v];
+      let r=(SR.cache[lvK] && Date.now()-SR.cache[lvK].at < 10*60*1000) ? SR.cache[lvK] : null;
+      if(!r && awaitQual){ try{ r=await SR.byId(effId); }catch(e){ r=null; } }
       if(token!==this._tok) return;                       // 期间已切歌 → 本结果作废
       if(r && r.url){ u=r.url; label=r.br>=320000?"超高 320k":r.br>=192000?"高品 192k":"标准 128k"; }
-      if(!r && !hit) SR.warm(s);                          // 没等到就后台继续解析，下次即秒开
+      if(!r) SR.byId(effId).catch(()=>{});                // 没等到就后台继续解析，下次即秒开
     }
     if(token!==this._tok) return;
     this.qLabel=label;
@@ -2717,6 +3050,14 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   },
   warmNext(){
     const n=this.queue[this.i+1]; if(!n) return;
+    /* ★ 2026-10-30：下一首要是还没翻译出 id，趁这首还在放后台补齐 ——
+       本地曲库先命中（CRES），命不中再联网（XFIND）；
+       都是后台跑，不影响当前这首播放，切过去时已经热乎了。 */
+    try{
+      if(!n.id){
+        if(!CRES.fill(n) && navigator.onLine!==false) Promise.resolve(XFIND.find(n)).catch(()=>{});
+      }
+    }catch(e){}
     const r=stRec(n); if(!r || (r.src||"wy")!=="wy") return;   // 非网易云不用桥预热
     if(!Native.ok || Qual.v==="std") return;
     if(SR.fresh(n)) return;
@@ -2872,8 +3213,19 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   a.addEventListener("error",()=>{
     if(!P.cur()) return;
     if(P.tryNextSrc()) return;                 // 还有备用线路 → 已切过去，别动队列
+    /* ★ 2026-10-30：本地线路全挂 ≠ 这首歌真的没源。
+       旧逻辑到此直接跳歌 —— 用户看到的就是「一首接一首没反应」。
+       现在先用统一 bén 在线补一次真 id（同一首只补一次），补到了立刻接着放。 */
+    const s=P.cur(), k=skey(s.t,s.s);
+    if(P._filled!==k && navigator.onLine!==false){
+      P._filled=k;
+      P.playing=false; P.paint();
+      toast("本地线路不通，在线补找音源…");
+      P.start(true);                           // XFIND 有缓存就不会重搜；缓存 none 直接跳过
+      return;
+    }
     P.playing=false; P.errs++; P.paint();
-    if(P.errs<4){ toast("本曲所有线路都不可用，已跳过","!"); setTimeout(()=>P.next(1),500); }
+    if(P.errs<4){ toast("本曲暂无可用音源，已跳过","!"); setTimeout(()=>P.next(1),500); }
     else { toast("连续多首无可用音源"); }
   });
 })();
