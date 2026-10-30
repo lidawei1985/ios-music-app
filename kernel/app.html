@@ -975,10 +975,10 @@ w();window.addEventListener("resize",w);window.addEventListener("orientationchan
    原则仍是「宁可慢，不能断」：三档全挂时，图片回落上游 URL、数据回落包内快照。 */
 const CDN_REPO  = "lidawei1985/";
 const CDN_NODES = [
-  "https://cdn.jsdmirror.com/gh/",
   "https://gcore.jsdelivr.net/gh/",
   "https://cdn.jsdelivr.net/gh/",
-  "https://fastly.jsdelivr.net/gh/"
+  "https://fastly.jsdelivr.net/gh/",
+  "https://cdn.jsdmirror.com/gh/"
 ];
 const CDN = CDN_NODES[0] + CDN_REPO + "ios-music-api@main/data/";
 /* ★★★ 2026-10-10 图片资产已拆到**独立仓** lidawei1985/dwg-assets。
@@ -3268,7 +3268,7 @@ function heroMount(node){
     // 主视觉=真海报：模糊铺底(hero-ext) + 清晰封面(hero-art)，渐变只做氛围层(半透明)
     const cov=esc(songCover(s,""));
     return `<div class="hero-slide${k===0?" on":""}">
-      ${cov?`<img class="hero-ext" src="${cov}" alt="" loading="lazy" onerror="this.remove()">
+      ${cov?`<img class="hero-ext" src="${cov}" alt="" loading="lazy" onerror="this.dataset.e=(+this.dataset.e||0)+1;if(this.dataset.e>5)this.style.display='none'">
       <img class="hero-art" src="${cov}" alt="" loading="lazy" onerror="this.style.display='none'">`:""}
       <div class="hero-grad" style="background:
         radial-gradient(120% 90% at 18% 8%, hsl(${h} 72% 34% / .5), transparent 62%),
