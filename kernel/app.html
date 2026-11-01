@@ -867,6 +867,10 @@ w();window.addEventListener("resize",w);window.addEventListener("orientationchan
         <button class="qchip" id="plQual" aria-label="音质" data-page-node-id="Wz7pquZpVOgI1h32C111fG">音质</button>
         <button class="qchip" id="plRate" aria-label="播放速度">1.0×</button>
         <button class="qchip" id="plSleep" aria-label="定时关闭">定时</button>
+        <!-- ★ 原唱/伴奏一键切换：有伴奏才出现。数据来自 data/inst.json（云端采集，
+             三重闸门：标题含伴奏信号 + 不含翻唱信号 + 时长对齐，最后真测能播）。
+             伴奏是**独立的一首**（网易自己的伴奏条目 id），不是对人声做消音。 -->
+        <button class="qchip" id="plInst" aria-label="原唱/伴奏切换" style="display:none">伴奏</button>
       </div>
     </div>
     <div class="pseek" data-page-node-id="bS34HTXurAh8TCeAQf5PE4">
@@ -1407,7 +1411,7 @@ function snapBundle(){ const o={}; DB_NAMES.forEach(n=>o[n]=SNAP[n]); return o; 
          （CDN 上四个节点验下来都是新的，只有端上是旧的）。
      现在把 streams 加入热更列表：音源表从"必须出包"变成"云端即改即达"。
    -------------------------------------------------------------------- */
-const DB_LIVE = ["pool","charts","library","artists","mv","hero","streams"];
+const DB_LIVE = ["pool","charts","library","artists","mv","hero","streams","inst"];
 async function fetchLive(timeoutMs){
   const got = {};
   /* ★★ 2026-11-01 实测翻案：这个预算的**单位是被误解的** —— 它是「每个节点」的超时，
@@ -1738,8 +1742,23 @@ function isCv(t,s,a,cv){
    现在单独识别「非人声/演奏类」，给独立蓝紫角标「伴奏」，
    并把它排在更后面（伴奏/纯音乐在搜索里抢原曲位置是最典型的「张冠李戴」体感）。 */
 const INST_RE=/(伴奏|伴唱|卡拉\s?ok|karaoke|instrumental|off\s?vocal|无人声|纯音[乐曲]|轻音乐|钢琴版|吉他版|古筝版|口琴版|演奏版|鼓谱|曲谱|和声版|升调|降调|消音)/i;
-function isInst(t,s,a){
+function isInst(t,s,a,cv){
+  /* ★ 2026-11-02 治本：伴奏优先认**云端标注的 cv=3**，关键词只作兜底。
+     云端 cv=3 由 tools/harvest_inst.py 采集（标题含伴奏 + 不含翻唱 + 时长对齐 + 真测能播），
+     比关键词猜准得多 —— 关键词会把「钢琴版」「轻音乐」也算成伴奏，也会漏掉
+     标题干净但确实是伴奏的条目（比如「大鱼 伴奏」这种就还好，但「逆流成河」那种纯器乐就漏）。 */
+  if(cv===3) return true;
+  if(cv===1||cv===2) return false;              // 云端明确标了原唱/翻唱 → 不是伴奏
   return INST_RE.test(String(t||"")+"\u0001"+String(a||"")+"\u0001"+String(s||""));
+}
+/* 这首歌的**真伴奏**（有就有，没有就是没有 —— 绝不拿别的版本凑）。
+   数据：data/inst.json，键 = skey(歌名|歌手)，值 = {i:网易伴奏id, n, a, d, ov:原唱id}。 */
+function instOf(s){
+  try{
+    const m = (typeof DB!=="undefined" && DB.inst) ? DB.inst : null;
+    if(!m || !s) return null;
+    return m[skey(s.t||"", s.s||"")] || null;
+  }catch(e){ return null; }
 }
 /* ★★ 2026-10-22 「张冠李戴」第二道闸：视频投稿当歌曲。
    典型脏条目（真出现在旧歌库里）：「4K超清修复《海阔天空》1996现场版，目测全站最清晰！」
@@ -3078,6 +3097,7 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   async start(awaitQual){
     try{
     const s=this.cur(); if(!s) return;
+    this._instId=null;                 // 换歌即回到原唱（伴奏不跟着串到下一首）
     const token=++this._tok;
     /* 候选链：本曲所有能播的线路（主源 + xmap 里的备用源）。出错时挨个换，换完才跳歌。 */
     /* ① 本地：拿随包曲库把「只有歌名的策展曲目」翻译成真 id（离线即可命中） */
@@ -3253,6 +3273,18 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     const mS=$("#miniS"); mS.textContent=s.s+(s.a?" · "+s.a:""); mS._lt=mS.textContent;
     $("#plCov").src=cov; $("#plT").innerHTML=esc(s.t)+(isCv(s.t,s.s,s.a,s.cv)?'<span class="tag-cv">翻唱</span>':""); $("#plS").textContent=s.s+(s.a?" · "+s.a:"");
     $("#plFromLabel").textContent="正在播放"; $("#plFromSub").textContent=this.ctx;
+    /* 伴奏入口：当前这首歌**真有**伴奏才显示按钮（没伴奏就不摆个点了没反应的东西） */
+    const ib=$("#plInst");
+    if(ib){
+      const rec = instOf(s);
+      if(rec){
+        ib.style.display="";
+        ib.classList.toggle("on", !!this._instId);       // 正在放伴奏 → 高亮
+        ib.textContent = this._instId ? "原唱" : "伴奏";
+      }else{
+        ib.style.display="none"; this._instId=null;
+      }
+    }
     const qb=$("#plQual");
     if(qb){ const lab=this.qLabel||"标准 128k";
       qb.innerHTML='音质 · '+esc(lab)+' <span class="qarr">›</span>';
@@ -5198,6 +5230,34 @@ $("#plPlay").onclick=()=>P.toggle();
 $("#plNext").onclick=()=>P.next(1);
 $("#plPrev").onclick=()=>P.prev();
 $("#plMode").onclick=()=>P.cycleMode();
+/* ★ 原唱 ⇄ 伴奏：一首歌如果云端采到了真伴奏，这里可以一键切换。
+   伴奏是**网易自己的伴奏条目**（独立 id，真录音室伴奏），不是对原唱做消音——
+   所以它是「另一首」，切过去就按另一首播，切回来按原唱播。
+   没有伴奏的歌这个按钮不会出现（paint 里 display:none）。 */
+$("#plInst").onclick=function(){
+  const s=P.cur(); if(!s){ toast("还没有播放歌曲"); return; }
+  const rec=instOf(s);
+  if(!rec){ toast("「"+s.t+"」暂无伴奏"); return; }
+  if(P._instId){
+    P._instId=null;
+    P.start(false);                                  // 重新按原唱起播
+    toast("已切回原唱");
+  }else{
+    const a=P.au();
+    if(!a){ toast("播放器未就绪"); return; }
+    P._instId=String(rec.i||"");
+    try{
+      a.src=srcUrl("wy", P._instId);
+      a.currentTime=0;
+      const pr=a.play(); if(pr&&pr.catch) pr.catch(function(){
+        toast("伴奏起播失败，已切回原唱","!");
+        P._instId=null; P.start(false);
+      });
+      toast("伴奏版 · 再点回原唱");
+    }catch(e){ P._instId=null; toast("伴奏切换失败","!"); }
+  }
+  P.paint();
+};
 $("#plMore").onclick=()=>{const s=P.cur(); if(s) moreSheet(s,P.queue,P.i,P.ctx); else toast("还没有播放歌曲");};
 $("#plList").onclick=()=>{ if(!P.queue.length){toast("播放列表是空的");return;} listSheet(P.queue,P.ctx); };
 /* 操作行：收藏 / 下载 / 评论 / 歌词 —— 全部真生效 */
