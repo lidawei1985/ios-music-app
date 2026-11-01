@@ -2013,7 +2013,11 @@ document.addEventListener("dwg:catidx", ()=>{
      ③ 歌手：必须沾边（杜绝同名不同人串歌）+ 时长差 ≤8s。
    ===================================================================== */
 const XFIND = (function(){
-  const KEY = "dwg.xfind.v1";
+  /* ★ 2026-11-02：缓存键升到 v2 —— 强制作废手机上旧的一批补源结果。
+     原因：v1 时代补源走 cloudsearch/pc 时歌手/时长字段读错（见下方 ①处注释），
+     两道校验被跳过，缓存里可能已经躺着「歌名一样但不是这个人唱的」的 id。
+     只改比对逻辑不改键的话，用户手机上仍会一直用旧结果放错歌。 */
+  const KEY = "dwg.xfind.v2";
   const BAD = /(伴奏|纯音乐|instrumental|karaoke|消音|DJ版|dj ?版|remix|加速|慢速|降调|升调|翻唱|cover|片段|铃声|试听|串烧|0\.\d+x|1\.\d+x|live|现场|演唱会|完整版|搞笑|纯享|舞曲|广场舞|钢琴版|吉他版|口琴|笛子|萨克斯|八音盒|教学|清唱|demo|demo版|试音)/i;
   let cache = null;
   function load(){
@@ -2050,7 +2054,11 @@ const XFIND = (function(){
     else if(ct.indexOf(bt) >= 0 || bt.indexOf(ct) >= 0) sc = 70;
     else return 0;                                     // 标题对不上 → 不是同一首
     const ba = nrm(a||""), ca = nrm(c.s||"");
-    if(ba && ca){
+    /* ★ 2026-11-02：旧写法是 `if(ba && ca)` —— 拿不到歌手字段时这道关卡直接
+       被跳过，等于「歌名一样就收」，串歌就是从这漏进来的。
+       现在：知道要找谁(ba)却拿不到候选的歌手(ca) → 一律不收（宁可暂缺）。 */
+    if(ba){
+      if(!ca) return 0;
       if(ba === ca || ba.indexOf(ca) >= 0 || ca.indexOf(ba) >= 0) sc += 20;
       else return 0;                                   // 同名不同人 → 杜绝串歌
     }
@@ -2068,27 +2076,47 @@ const XFIND = (function(){
     const k = skey(s.t, s.s);
     const hit = peek(k);
     if(hit) return hit;
-    const q = (s.t + " " + (s.s||"")).trim();
     const out = [];
+    /* ★ 2026-11-02：查询串先只用**歌名**。实测「歌名+歌手」双词时网易做的是
+       相关推荐，回来的全是该歌手别的歌（搜「兰香如故 叶炫清」→ 时间中央/九张机），
+       一条都对不上；纯歌名才真的返回同名曲目，再交给 score() 的歌手关卡挑人。
+       两轮都搜不到才算没有。 */
+    const qs = [s.t];
+    const full = (s.t + " " + (s.s||"")).trim();
+    if(full !== s.t) qs.push(full);
     /* ① 网易云（优先，曲库主力来源） */
     try{
-      let d = await nget("https://music.163.com/api/search/get/web?s="
+      for(const q of qs){
+        let d = await nget("https://music.163.com/api/search/get/web?s="
+                + encodeURIComponent(q) + "&type=1&offset=0&limit=12",
+                "https://music.163.com/", 9000);
+        let arr = ((d || {}).result || {}).songs || [];
+        if(!arr.length){
+          d = await nget("https://music.163.com/api/cloudsearch/pc?s="
               + encodeURIComponent(q) + "&type=1&offset=0&limit=12",
               "https://music.163.com/", 9000);
-      let arr = ((d || {}).result || {}).songs || [];
-      if(!arr.length){
-        d = await nget("https://music.163.com/api/cloudsearch/pc?s="
-            + encodeURIComponent(q) + "&type=1&offset=0&limit=12",
-            "https://music.163.com/", 9000);
-        arr = ((d || {}).result || {}).songs || [];
-      }
-      for(const x of arr){
-        const c = {id:String(x.id||""), t:x.name||"",
-                   s:(x.artists||[]).map(function(a){return a.name;}).join("/"),
-                   dur:Math.round((x.duration||0)/1000)};
-        if(!c.id || c.id === "0") continue;
-        const sc = score(c, s.t, s.s, s.dur);
-        if(sc > 0) out.push({sc:sc, src:"wy", id:c.id});
+          arr = ((d || {}).result || {}).songs || [];
+        }
+        let got = 0;
+        for(const x of arr){
+          /* ★ 2026-11-02 实测翻案（「歌不对」的真根因）：cloudsearch/pc 返回的
+             歌手字段是 **ar**、时长是 **dt**（毫秒），而老接口 get/web 用的是
+             artists / duration。旧代码只认后者 → 走 cloudsearch 分支时歌手与
+             时长**恒为空** → score() 里两句 `if(ba && ca)` / `if(dur && c.dur)`
+             全被跳过 → 「歌名一样就敢收」→ 放出来是别人的版本。
+             这里两个口径都兼容，并对 dt 做单位兜底。 */
+          const ars = x.ar || x.artists || [];
+          const raw = (x.dt != null) ? x.dt : x.duration;
+          let dur = Math.round((Number(raw) || 0) / 1000);
+          if(raw && Number(raw) < 100000) dur = Math.round(Number(raw));  // 已是秒
+          const c = {id:String(x.id||""), t:x.name||"",
+                     s:ars.map(function(a){return a.name;}).join("/"),
+                     dur:dur};
+          if(!c.id || c.id === "0") continue;
+          const sc = score(c, s.t, s.s, s.dur);
+          if(sc > 0){ out.push({sc:sc, src:"wy", id:c.id}); got++; }
+        }
+        if(got) break;                       // 这一轮已挑到，不必再搜第二种查询串
       }
     }catch(e){}
     /* ② 咪咕兜底：**2026-11-02 摘除**。搜索接口（MIGUM2.0 search_all.do）本身还能用，
@@ -4805,12 +4833,17 @@ function openMV(mid){
   const mv=$("#mvplayer");
   Cur.mvPlaying=false;
   $("#mvOverlay").style.background="linear-gradient(transparent,rgba(0,0,0,.45))";
-  $("#mvOverlay").innerHTML=`<button class="big" id="mvPlay" style="width:62px;height:62px;border-radius:50%;background:#fff;color:#000;border:0;display:flex;align-items:center;justify-content:center;cursor:pointer">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.1v13.8L19 12z"/></svg></button>`;
-  $("#mvPlay").onclick=playMVNow;
+  /* ★ 2026-11-02 主人指令：「MV/演唱会直接开，不要网页播放，不能跳转」。
+     旧实现打开后先摆一个大播放键，用户还得**再点一下**才取流起播 ——
+     这就是"点了没反应 / 以为要跳走"的来源。现在：打开即自动取流起播，
+     播放键只在「系统拦下自动播放」时才补回来（见 mountMVInline）。 */
+  $("#mvOverlay").innerHTML='<div style="display:flex;flex-direction:column;align-items:center;gap:12px;color:#fff">'
+    +'<div class="spin" style="width:30px;height:30px;border-width:2.5px"></div>'
+    +'<div style="font-size:12.5px;color:rgba(235,235,245,.75)">正在取流…</div></div>';
   mv.dataset.in="1"; $("#tabbar").classList.add("hide"); $("#mini").classList.add("hide");
   Native.call("orient",{all:1},3000);   // MV 页允许横竖屏
   Nav.overlays.push({id:"mvplayer", close:()=>closeMV()});
+  playMVNow();                          // ★ 打开即起播（同步调用，保住用户手势链）
 }
 /* iOS 壳：用户点「完成」关掉容器后原生回调 → 恢复断点续播 */
 window.__dwgMvClosed = function(){ try{ closeMV(); }catch(e){} };
@@ -4888,6 +4921,22 @@ function mountMVInline(v, m, attempt){
   const vid=document.getElementById("mvVideo");
   if(!vid) return;
   if(note) note.textContent="视频由网易云音乐官方 MV 提供 · 关闭即停止播放";
+  /* ★ 打开即播：显式起播一次（autoplay 属性在部分 iOS 状态——低电量/静音键——会被拒）。
+     真被拒也绝不跳浏览器/系统播放器，只把播放键补回来让用户点一下。 */
+  try{
+    const pr=vid.play();
+    if(pr && pr.catch) pr.catch(function(){
+      if(Cur.mvPlaying===false) return;             // 已经关掉了，别再补按钮
+      if(note) note.textContent="点一下开始播放";
+      ov.insertAdjacentHTML("beforeend",
+        '<button id="mvRetry" style="position:absolute;inset:0;margin:auto;width:62px;height:62px;'
+        +'border-radius:50%;background:#fff;color:#000;border:0;display:flex;align-items:center;'
+        +'justify-content:center;cursor:pointer"><svg width="26" height="26" viewBox="0 0 24 24" '
+        +'fill="currentColor"><path d="M8 5.1v13.8L19 12z"/></svg></button>');
+      const rb=document.getElementById("mvRetry");
+      if(rb) rb.onclick=function(){ rb.remove(); const p2=vid.play(); if(p2&&p2.catch) p2.catch(()=>{}); };
+    });
+  }catch(e){}
   /* 真起播就清提示；起播失败先降清晰度重试，再不行才交给系统播放器（iOS 兜底） */
   vid.addEventListener("playing", function(){
     if(note) note.textContent="正在播放 · "+q+" · 关闭即停止";
