@@ -1828,10 +1828,49 @@ function srcUrl(s){
 function srcUrlOf(sid, id){
   sid=String(sid||"wy").trim()||"wy";
   if(!id) return "";
-  if(sid==="kw") return "http://antiserver.kuwo.cn/anti.s?type=convert_url&rid=MUSIC_"+id+"&format=mp3&response=url";
+  if(sid==="kw") return KWANTI(id);        // ★ 酷我：这是「兑换链」，不是音频，见 KWRES
   if(sid==="migu"||sid==="mg") return "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenV2?contentId="+id+"&resourceType=2&format=mp3";
   return "https://music.163.com/song/media/outer/url?id="+id+".mp3";
 }
+function KWANTI(id){
+  /* ★ 2026-11-02 实测：必须 https。旧代码用 http:// —— iOS ATS 直接掐断明文请求，
+     兑换都拿不到；实测 https://antiserver.kuwo.cn 同参数照常返回真实地址。 */
+  return "https://antiserver.kuwo.cn/anti.s?type=convert_url&rid=MUSIC_"+id+"&format=mp3&response=url";
+}
+/* =====================================================================
+   酷我「兑换链」解析器（2026-11-02 新增 —— 白捡 312 首）
+   ---------------------------------------------------------------------
+   病灶：anti.s 返回的**不是音频**，是一段真实 mp3 的 URL 文本。
+   旧逻辑把它直接塞进 <audio src> → 浏览器拿到 text/plain → 必然 error
+   → 换源换完就跳歌。服务端复检同样踩这个坑：312 条 kw 源被打成
+   **312/312 全灭 dead**，于是云端把这 312 首当成"没源"不再下发。
+   本机实测（2026-11-02，国内直连）：先兑换再取，**312 条里 311 条是真 MP3**
+   （audio/mpeg，1 条超时）—— 不是版权问题，纯粹是没做二次跳转。
+   这里每 20 分钟兑换一次即可（兑换出来的地址自带时效，别长期缓存）。
+   ===================================================================== */
+const KWRES={ c:{},
+  async url(id){
+    if(!id) return null;
+    const k=String(id), c=this.c[k];
+    if(c && Date.now()-c.at < 20*60*1000) return c.u;
+    let txt=null;
+    try{
+      if(typeof Native!=="undefined" && Native.ok){
+        const r=await Native.call("fetch",{url:KWANTI(k),headers:{}},6000);
+        if(r && r.text) txt=r.text;
+      }
+    }catch(e){}
+    if(!txt){ try{ const rp=await fetch(KWANTI(k)); txt=await rp.text(); }catch(e){ txt=null; } }
+    if(!txt) return null;
+    let u=String(txt).trim();
+    if(u.indexOf("http")!==0) return null;                 // 兑换失败/已下架
+    if(u.indexOf("http://")===0) u="https://"+u.slice(7);  // ATS：明文一律升 https
+    if(!this._in) this._in={};
+    if(!this._in[k]) this._in[k]=Promise.resolve(u);
+    this.c[k]={u:u, at:Date.now()};
+    return u;
+  }
+};
 
 /* =====================================================================
    多源映射（xmap）+ 播放故障自动换源（2026-10-22 新增）
@@ -2052,24 +2091,9 @@ const XFIND = (function(){
         if(sc > 0) out.push({sc:sc, src:"wy", id:c.id});
       }
     }catch(e){}
-    /* ② 咪咕（补网易没有的；https 通道，ATS 无风险） */
-    if(out.length < 3){
-      try{
-        const sw = JSON.stringify({song:1,album:0,singer:0,tagSong:0,mvSong:0,bestShow:0,lyricSong:0});
-        const d = await nget("https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/search_all.do?text="
-                  + encodeURIComponent(q) + "&pageNo=1&pageSize=8&searchSwitch="
-                  + encodeURIComponent(sw), "https://m.music.migu.cn/", 9000);
-        const res = (((d || {}).songResultData) || {}).result || [];
-        for(const x of res){
-          const c = {id:String(x.contentId||""), t:x.name||"",
-                     s:(x.singers||[]).map(function(a){return a.name;}).join("/"),
-                     dur:parseInt(x.length||0) || 0};
-          if(!c.id) continue;
-          const sc = score(c, s.t, s.s, s.dur);
-          if(sc > 0) out.push({sc:sc, src:"migu", id:c.id});
-        }
-      }catch(e){}
-    }
+    /* ② 咪咕兜底：**2026-11-02 摘除**。搜索接口（MIGUM2.0 search_all.do）本身还能用，
+       但它的播放地址接口全线 299996（见 srcOrder() 注释）—— 搜得到 id 也播不出来，
+       留着只会白等 9 秒再换源。等哪天接口恢复再开。 */
     if(!out.length){ load()[k] = {none:1}; save(); return null; }
     out.sort(function(p, q2){ return q2.sc - p.sc; });
     const best = {src:out[0].src, ids:{}};
@@ -2126,14 +2150,20 @@ const XFIND = (function(){
    pool.json 的云端探测算出）算出来了却没人用 —— 等于云端探测白算、
    bili 兜底也永远排不进来。现在先读 DB.order，缺的源再补上。 */
 function srcOrder(){
+  /* ★ 2026-11-02：咪咕线路**整条摘除**（不只是在末尾降级）。
+     实测其播放地址接口（MIGUM2.0 strategy/listen-url 与 MIGUM3.0 sub/listenV2，
+     换 app.pd / app.c / m.music 三个 host、加 channel / ua / toneFlag 头都试过）
+     一律回 `{"code":"299996","info":"路由请求不支持"}` —— 是接口级失效，不是单曲版权。
+     留着它的后果：搜得到 id、拼得出 URL，但 <audio> 必然 error，
+     白等一次超时还拖慢换源，用户只看到"点了没声"。 */
   try{
     const o = (typeof DB !== "undefined" && DB.order && DB.order.length) ? DB.order : null;
     if(o){
-      const ex = ["wy","migu","kw","bili"].filter(function(x){ return o.indexOf(x) < 0; });
-      return o.concat(ex);
+      const ex = ["wy","kw","bili"].filter(function(x){ return o.indexOf(x) < 0; });
+      return o.concat(ex).filter(function(x){ return x!=="migu" && x!=="mg"; });
     }
   }catch(e){}
-  return ["wy","migu","kw","bili"];
+  return ["wy","kw","bili"];
 }
 function streamCands(s, extra){
   const out=[], seen=new Set();
@@ -3039,6 +3069,7 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
     this._cands=streamCands(s); this._ci=0;
     /* 上一顿 inductive 复读陷阱：播之前不要先联网搜，直接按本地候选起播。 */
     let fb=(this._cands[0]&&this._cands[0].url)||srcUrl(s);
+    fb=await this._realUrl(this._cands[0], fb, token);     // 酷我：兑换出真实地址再播
     this.t=0; this.tot=s.dur||0; this.qLabel="";
     applyTheme(s);                       // 背景/主题跟随当前播放的封面主色
     Store.pushRecent(s);                 // 最近播放真落地（刷新不丢）
@@ -3051,6 +3082,7 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
       if(token!==this._tok) return;
       if(extra && extra.ids){ this._cands=streamCands(s, extra); this._ci=0; }
       fb=(this._cands[0]&&this._cands[0].url)||"";
+      fb=await this._realUrl(this._cands[0], fb, token);
     }
     if(!fb){
       toast("「"+s.t+"」暂无可用音源","!");
@@ -3103,17 +3135,32 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   },
   toggle(){ const a=this.au(); if(!this.cur()) return;
     if(a.paused){ const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>{}); } else a.pause(); },
+  /* 把「兑换链」换成真能播的地址（目前只有酷我需要；其余原样返回） */
+  async _realUrl(c, fallback, token){
+    let u=(c&&c.url)||fallback||"";
+    if(!u) return u;
+    if(c && c.src==="kw"){
+      let real=null;
+      try{ real=await KWRES.url(c.id); }catch(e){ real=null; }
+      if(real){ c.url=real; u=real; }
+      else u="";                       // 兑换不出来 → 这条线路等于没有，交给下一候选
+    }
+    if(token!=null && token!==this._tok) return "";
+    return u;
+  },
   /* 换源：当前线路播不了就试下一条。返回 true 表示已接管（别跳歌）。 */
-  tryNextSrc(){
+  async tryNextSrc(){
     const c=this._cands||[];
     if(this._ci+1>=c.length) return false;
     this._ci++;
     const n=c[this._ci];
     if(!n||!n.url) return false;
     const label = n.src==="wy"?"网易云线路" : n.src==="migu"?"咪咕线路" : n.src==="kw"?"酷我线路" : "备用线路";
+    let u=await this._realUrl(n, n.url, null);
+    if(!u) return false;
     this.qLabel=label;
     try{
-      const a=this.au(); a.src=n.url;
+      const a=this.au(); a.src=u;
       const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>{});
     }catch(e){ return false; }
     toast("这条线路不通，已切到"+label);
@@ -3248,9 +3295,9 @@ const P = { queue:[], i:0, playing:false, t:0, tot:0, ctx:"歌库", mode:"list",
   /* ★ 2026-10-22：出错先换源，不是直接跳歌。
      旧逻辑一响 error 就 toast「已跳过」→ 用户眼看着歌被跳掉，其实换个线路就能放。
      现在 streamCands() 给出了本曲的全部线路，挨个试完才认输。 */
-  a.addEventListener("error",()=>{
+  a.addEventListener("error",async ()=>{
     if(!P.cur()) return;
-    if(P.tryNextSrc()) return;                 // 还有备用线路 → 已切过去，别动队列
+    if(await P.tryNextSrc()) return;           // 还有备用线路 → 已切过去，别动队列
     /* ★ 2026-10-30：本地线路全挂 ≠ 这首歌真的没源。
        旧逻辑到此直接跳歌 —— 用户看到的就是「一首接一首没反应」。
        现在先用统一 bén 在线补一次真 id（同一首只补一次），补到了立刻接着放。 */
