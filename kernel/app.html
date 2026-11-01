@@ -1797,8 +1797,13 @@ function skey(t,s){ return cpslice(norm(t),40)+"|"+cpslice(norm(s),30); }
    ===================================================================== */
 function stRec(s){                                     // 取该曲的 streams 记录
   if(!s) return null;
+  /* ★ 2026-11-01：服务端按**国内直连**全量复检过（tools/recheck_streams.py），
+     确认放不出来的（VIP / 版权 / 下架，网易回的是一段 HTML 错误页）会打 `dead: 1`。
+     以前端上照样拿这条去试 → 等 <audio> 超时才报错 → 用户看到的就是"点了半天没反应"。
+     现在直接当它不存在：立刻走在线补源（XFIND）去找别的线路，比干等更快。 */
+  const rec = DB.st[skey(s.t,s.s)];
+  if(rec) return rec.dead ? null : rec;
   if(s.id){
-    const r=DB.st[skey(s.t,s.s)]; if(r) return r;
     /* ★ 2026-10-07 多源：曲库记录自带的 src 优先于「默认网易」。
        曲库 31k+ 首里已混入 migu/kw/bili 源（见 harvest cmd_multi），
        它们的 id 不是网易 songId，硬拼 outer/url 必然 404 → 必须按 src 走对应直链。 */
@@ -1806,7 +1811,8 @@ function stRec(s){                                     // 取该曲的 streams �
     if(sid!=="wy"){ const o={src:sid}; o[sid]=s.id; return o; }
     return {src:"wy", wy:s.id};
   }
-  return DB.st[skey(s.t,s.s)]||null;
+  const r2=DB.st[skey(s.t,s.s)];
+  return (r2 && !r2.dead) ? r2 : null;
 }
 function streamOf(s){ const r=stRec(s); return r? (r[r.src||"wy"]) : null; }
 function stInfo(s){ return stRec(s); }
