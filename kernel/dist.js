@@ -1393,16 +1393,37 @@ function snapBundle(){ const o={}; DB_NAMES.forEach(n=>o[n]=SNAP[n]); return o; 
      · 云端现在由 tools/mkdata_js.py 同时产出 data/<n>.js：
          window.__DWG_DB_POOL={...};
        <script> 注入即可拿到，iOS / 安卓 / 网页三端一套代码。
-   ★ 只拉「小且会变」的 6 个（合计约 645KB）：曲库池 / 榜单 / 歌单 / 歌手 / MV / 主视觉。
-     分类 / 流 / 歌词 / 评论体积大（约 8.5MB）且变化少，仍随包内置，不白耗用户流量。
-   ★ 每个文件独立成败：拿到几个算几个，只要核心两件（pool/charts）到位就刷新界面。 */
-const DB_LIVE = ["pool","charts","library","artists","mv","hero"];
+   ★ 只拉「小且会变」的几个：曲库池 / 榜单 / 歌单 / 歌手 / MV / 主视觉 / **音源表**。
+     歌词 / 评论体积大（12.9MB + 5.6MB）且变化慢，仍随包内置，不白耗用户流量。
+   ★ 每个文件独立成败：拿到几个算几个，只要核心两件（pool/charts）到位就刷新界面。
+   --------------------------------------------------------------------
+   ★★ 2026-11-01 血案修复（这是"远程更新能不能生效"的命门）：
+     streams（音源表）原先**不在**这个列表里，理由是"体积大"——实测它只有 **537KB**，
+     真正大的是歌词(12.9MB)/评论(5.6MB)。后果极其隐蔽且严重：
+       · 服务端 11-01 把可播音源从 3154 条补到 **4711 条**（可播率 65.8% → 92.3%）；
+       · 但端上只能读到**包内 SNAP 里那份 3154 条的旧表** —— 新补的 1557 首
+         **一首都到不了手机**，除非重新出包装机。
+       · 表现就是"我明明补好了，用户还是一堆没资源"，而且**数据面完全看不出问题**
+         （CDN 上四个节点验下来都是新的，只有端上是旧的）。
+     现在把 streams 加入热更列表：音源表从"必须出包"变成"云端即改即达"。
+   -------------------------------------------------------------------- */
+const DB_LIVE = ["pool","charts","library","artists","mv","hero","streams"];
 async function fetchLive(timeoutMs){
   const got = {};
+  /* ★★ 2026-11-01 实测翻案：这个预算的**单位是被误解的** —— 它是「每个节点」的超时，
+     不是整轮预算。而默认值 9000ms 卡在一个极尴尬的位置：
+       · 本机实测 cdn.jsdelivr.net 取 pool.js 要 **9349ms**，gcore 12012ms，fastly 6480ms；
+       · 于是 9s 一到就判这个节点失败、换下一个，四个节点轮流卡 9s = 最多 36s，
+         而端上 refreshLive 只等这一次 → **实测 live 恒为 false，热更新静默失效**。
+       表现（非常隐蔽）：CDN 上数据全是新的、四个节点验下来都对，
+       但手机永远是包内那份旧快照 —— "我明明更新了，怎么还是老样子"。
+     ★ 修法：单节点预算压到 6s（真慢的节点早点放弃，让下一个上），
+       4 个节点最坏 24s，正常情况 6~7s 就落到最快的那个节点。 */
+  const per = timeoutMs || 6000;
   await Promise.all(DB_LIVE.map(async n=>{
     const gk = "__DWG_DB_" + n.toUpperCase();
     try{ window[gk] = null; }catch(e){}
-    const ok = await loadScript(CDN_DYN + n + ".js", timeoutMs||9000);
+    const ok = await loadScript(CDN_DYN + n + ".js", per);
     const v = window[gk];
     if(ok && v && typeof v === "object") got[n] = v;
   }));
@@ -1681,7 +1702,7 @@ function rebuildTop(){
 /* 后台静默刷新：拿到新数据才重绘（stale-while-revalidate） */
 async function refreshLive(){
   if(window.__NO_LIVE__) return false;
-  const out = await fetchLive(9000);
+  const out = await fetchLive(6000);
   if(!out) return false;
   applyBundle(out, true);
   rebuildCurrentRoot();
@@ -1690,7 +1711,7 @@ async function refreshLive(){
 
 /* 手动刷新（设置页按钮用） */
 async function loadDB(){
-  const out = await fetchLive(9000);
+  const out = await fetchLive(6000);
   if(out) applyBundle(out, true); else applyBundle(snapBundle(), false);
   rebuildCurrentRoot();
   return DB.live;
